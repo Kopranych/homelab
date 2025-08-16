@@ -7,6 +7,7 @@
 - **Additional Storage**: Your existing 1TB + 512GB SSDs for backups/data
 - **Network**: Gigabit Ethernet
 - **Form Factor**: Mini PC
+- **Power Protection**: UPS for mini PC + WiFi router
 
 ## 🖥️ Recommended Mini PC Options
 
@@ -37,6 +38,7 @@
 1. **Mini PC** (barebones - CPU included, no RAM/storage)
 2. **RAM**: 32GB DDR5 kit (2x16GB for dual channel)
 3. **Primary Storage**: 1TB NVMe M.2 SSD (Gen4 for best performance)
+4. **UPS**: 600-900VA UPS for mini PC + WiFi router protection
 
 ### What You Already Have
 - **512GB SSD** → Database data + Development cache (internal SATA)
@@ -89,7 +91,54 @@ USB 3.0: 1TB SSD (All Backups)
    - System configuration backups
 ```
 
+## 🔋 UPS (Uninterruptible Power Supply) Setup
+
+### Why You Need UPS
+- **Continue working** during power outages (15-30 minutes runtime)
+- **Graceful shutdown** prevents data corruption
+- **Protect equipment** from power surges and voltage fluctuations
+- **Network connectivity** - router stays online during outages
+
+### Recommended UPS Options
+
+#### Budget Option: APC Back-UPS 600VA
+- **Model**: BE600M1 or similar
+- **Power**: 600VA/330W
+- **Runtime**: ~15 minutes for mini PC + router
+- **Price**: $70-90
+- **Perfect for**: Basic protection and graceful shutdown
+
+#### Better Option: CyberPower CP900AVR
+- **Model**: 900VA/540W with AVR
+- **Runtime**: ~20-30 minutes for mini PC + router
+- **Features**: Automatic Voltage Regulation, LCD display
+- **Price**: $100-130
+- **Perfect for**: Longer runtime + voltage protection
+
+#### Premium Option: APC Smart-UPS 750VA
+- **Model**: SMC750I or similar
+- **Runtime**: ~30-45 minutes
+- **Features**: Network management, smart battery monitoring
+- **Price**: $200-250
+- **Perfect for**: Professional setup with remote monitoring
+
+### Power Calculation
+```
+Mini PC: ~45W max load
+WiFi Router: ~15W
+Total Load: ~60W
+UPS Efficiency: ~85%
+Required UPS: 60W ÷ 0.85 = ~71W minimum
+
+Recommendation: 600VA+ UPS for comfortable headroom
+```
+
 ## 🔌 Final Setup
+
+### UPS Connection
+- **UPS Battery Outlets**: Mini PC + WiFi router
+- **UPS Surge-Only Outlets**: Monitor, USB enclosure, other peripherals
+- **USB Connection**: UPS to mini PC for shutdown communication
 
 ### Physical Placement
 - **Location**: Well-ventilated area, away from heat sources
@@ -135,7 +184,8 @@ With your configuration:
 | Mini PC | Beelink SER7 (barebones) | $400-500 |
 | RAM | Crucial 32GB DDR5-4800 Kit | $120-150 |
 | NVMe SSD | Samsung 980 Pro 1TB | $80-120 |
-| **Total** | | **$600-770** |
+| UPS | CyberPower CP900AVR | $100-130 |
+| **Total** | | **$700-900** |
 
 *Plus your existing SSDs = Complete setup*
 
