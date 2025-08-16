@@ -44,8 +44,10 @@
 4. **UPS**: 600-900VA UPS for mini PC + WiFi router protection
 
 ### What You Already Have
-- **512GB SSD** → Database data + Development cache (internal SATA)
-- **1TB SSD** → Database backups + Photos backup + Development projects backup (external USB 3.0)
+- **512GB SSD** → Has existing photos (NTFS formatted from Windows)
+- **1TB SSD** → Has existing photos (NTFS formatted from Windows)
+
+**Note**: We'll connect these drives later in Step 6 (Photo Management) to safely read NTFS data, sort, deduplicate, and organize your photos before setting up backups on Linux filesystems.
 
 ## 🏗️ Assembly Steps
 
@@ -73,25 +75,22 @@
 
 ### 4. Install Secondary Storage
 
-#### Internal Storage Setup
+#### Initial Setup - Clean Start
 ```
-SATA Bay: 512GB SSD (Databases + Dev Cache)
-1. Connect SATA data cable to motherboard
-2. Connect SATA power cable  
-3. Mount 512GB SSD in 2.5" SATA bay
-4. This will be mounted as /mnt/databases
+For now: Only install the 1TB NVMe SSD
+Your existing photo drives: Keep disconnected and safe
+
+We'll add them later in Step 6 when we set up photo management
+This ensures no accidental data loss during initial setup
 ```
 
-#### External Backup Storage
+#### Future Storage Plan (Step 6)
 ```
-USB 3.0: 1TB SSD (All Backups)
-1. Install 1TB SSD in USB 3.0 enclosure
-2. Connect to mini PC via USB 3.0
-3. Use for all backup needs:
-   - Database backups
-   - Photos backups (full + incremental)
-   - Development projects backups
-   - System configuration backups
+After system is stable and photo management is ready:
+- Connect your NTFS drives via USB enclosures first (read-only safety)
+- Install NTFS support: sudo apt install ntfs-3g
+- Mount drives safely and copy photos to organized Linux storage
+- Then reformat drives for Linux use (ext4) or keep for backups
 ```
 
 ## 🔋 UPS (Uninterruptible Power Supply) Setup
