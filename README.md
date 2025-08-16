@@ -27,10 +27,10 @@ Set up a mini PC at home that you can access from anywhere on the internet to:
 - Configure basic security (firewall, SSH keys)
 
 ### 4. Internet Access Setup
-Choose one option:
-- **Option A**: Port forwarding on your router (simple but less secure)
-- **Option B**: VPN server (secure remote access)
-- **Option C**: Cloudflare Tunnel (secure, no port forwarding needed)
+- **Tailscale VPN**: Set up Tailscale for secure remote access
+- No port forwarding needed on your router
+- Works from anywhere with encrypted connections
+- Easy device management through Tailscale admin panel
 
 ### 5. Install Docker
 - Install Docker and Docker Compose
@@ -60,7 +60,7 @@ Each of these top-level steps will have its own detailed guide:
 ## 🔗 Quick Links
 - [Hardware Requirements](docs/01-hardware-setup.md)
 - [OS Installation Guide](docs/02-os-installation.md)
-- [Internet Access Options](docs/04-internet-access.md)
+- [Tailscale Setup Guide](docs/04-tailscale-setup.md)
 
 ---
 
