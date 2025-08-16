@@ -5,7 +5,7 @@
 - **RAM**: 32GB
 - **Primary Storage**: 1TB NVMe SSD (OS + applications)
 - **Additional Storage**: Your existing 1TB + 512GB SSDs for backups/data
-- **Network**: Gigabit Ethernet
+- **Network**: Gigabit Ethernet + WiFi 6 (dual connectivity options)
 - **Form Factor**: Mini PC
 - **Power Protection**: UPS for mini PC + WiFi router
 
@@ -15,6 +15,7 @@
 - **CPU**: AMD Ryzen 7 7840HS (8 cores/16 threads)
 - **RAM**: Expandable to 64GB DDR5
 - **Storage**: M.2 NVMe slot + 2.5" SATA bay
+- **Network**: Gigabit Ethernet + WiFi 6E + Bluetooth
 - **Price**: ~$400-500 (barebones)
 - **Perfect for**: Your requirements + room to grow
 
@@ -22,6 +23,7 @@
 - **CPU**: AMD Ryzen 7 PRO 6850U (8 cores/16 threads)
 - **RAM**: Up to 64GB DDR5
 - **Storage**: Dual M.2 slots + 2.5" SATA
+- **Network**: Gigabit Ethernet + WiFi 6 + Bluetooth
 - **Price**: ~$500-600 (barebones)
 - **Perfect for**: Professional reliability
 
@@ -29,6 +31,7 @@
 - **CPU**: AMD Ryzen 9 7940HS (8 cores/16 threads)
 - **RAM**: Up to 64GB DDR5
 - **Storage**: Dual M.2 + 2.5" SATA
+- **Network**: Gigabit Ethernet + WiFi 6E + Bluetooth
 - **Price**: ~$600-700 (barebones)
 - **Perfect for**: Maximum performance
 
@@ -153,9 +156,30 @@ Recommendation: 600VA+ UPS for comfortable headroom
 - **Location**: Well-ventilated area, away from heat sources
 - **Orientation**: Horizontal with vents unobstructed
 - **Cables**:
-  - Ethernet cable to router/switch
+  - Ethernet cable to router/switch (primary connection)
+  - WiFi antennas positioned for good signal (backup/mobile connection)
   - Power adapter
   - USB enclosure (if using external storage)
+
+## 🌐 Network Connectivity Options
+
+### Option 1: Ethernet Primary + WiFi Backup (Recommended)
+**Benefits:**
+- **Ethernet**: Fastest, most reliable connection (1 Gbps)
+- **WiFi**: Automatic failover if Ethernet cable unplugged
+- **Redundancy**: Two network paths for maximum uptime
+
+### Option 2: WiFi Primary + Ethernet Available
+**Benefits:**
+- **Flexibility**: No cable required for daily operation
+- **Ethernet**: Available for high-bandwidth tasks (backups, large transfers)
+- **Clean setup**: Fewer cables in your setup area
+
+### Option 3: Dual Active Connections
+**Advanced Setup:**
+- **Load balancing**: Distribute traffic across both connections
+- **Bonding**: Combine bandwidth (requires router support)
+- **Separate networks**: Ethernet for LAN, WiFi for guest/IoT network
 
 ### Initial Power-On Check
 ```
