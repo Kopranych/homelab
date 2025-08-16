@@ -135,9 +135,18 @@ Recommendation: 600VA+ UPS for comfortable headroom
 
 ## 🔌 Final Setup
 
+### Temporary Installation Hardware
+**Needed only during OS installation:**
+- **USB Keyboard**: For installation setup
+- **Monitor/TV**: With HDMI input for display
+- **HDMI Cable**: To connect mini PC to screen
+- **USB Drive**: 8GB+ for Ubuntu installer (prepare on main PC)
+
+**After installation, these can be disconnected - access via SSH only**
+
 ### UPS Connection
 - **UPS Battery Outlets**: Mini PC + WiFi router
-- **UPS Surge-Only Outlets**: Monitor, USB enclosure, other peripherals
+- **UPS Surge-Only Outlets**: Monitor (temporary), USB enclosure, other peripherals
 - **USB Connection**: UPS to mini PC for shutdown communication
 
 ### Physical Placement
