@@ -1,7 +1,7 @@
-# Step 2: OS Installation
+# Step 2: OS Installation & Initial Setup
 
 ## 🎯 Goal
-Install Ubuntu Server 22.04 LTS on your mini PC with proper storage configuration for your home lab setup.
+Install Ubuntu Server 22.04 LTS on your mini PC with final storage configuration for your home lab setup.
 
 ## 🐧 Why Ubuntu Server 22.04 LTS?
 - **Long Term Support**: Updates until 2027
@@ -43,15 +43,6 @@ Invoke-WebRequest -Uri "https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-se
 2. **Select Ubuntu ISO**
 3. **Select USB drive**
 4. **Flash** and wait
-
-#### Alternative: Windows PowerShell (Advanced)
-```powershell
-# List available disks
-Get-Disk
-
-# Use Windows built-in tool (replace X: with your USB drive letter)
-# This is more complex - Rufus is recommended for Windows users
-```
 
 ## 🖥️ Temporary Setup for Installation
 
@@ -107,26 +98,74 @@ Select: "Custom storage layout"
 Not: "Use entire disk" (we need specific partitioning)
 ```
 
-#### Partition the 1TB NVMe SSD (Flexible Layout for Future Photo Management)
-```
-Device: /dev/nvme0n1 (1TB NVMe)
+## 🗂️ Single-Phase Storage Strategy
 
-Smart partitioning for future flexibility:
+**We'll set up the final configuration immediately, leaving old drives untouched until photo consolidation:**
+
+---
+
+## 📦 Final Installation Partitioning
+
+#### Partition the 1TB NVMe SSD (Final Layout)
+```
+Device: /dev/nvme0n1 (1TB NVMe) - Final optimized layout
+
 1. EFI Boot: 1GB, fat32, /boot/efi
-2. Boot: 1GB, ext4, /boot  
-3. Root: 100GB, ext4, / (OS + system files)
-4. Home: 200GB, ext4, /home (user files, small projects)
-5. Docker: 100GB, ext4, /opt/docker (containers)
-6. Photos: 400GB, ext4, /mnt/photos (future organized photos)
-7. Projects: 150GB, ext4, /mnt/projects (development work)
-8. Swap: 32GB (match your RAM)
+2. Boot: 1GB, ext4, /boot
+3. Root: 50GB, ext4, / (minimal OS)
+4. Home: 50GB, ext4, /home (user configs only)
+5. Photos: 800GB, ext4, /mnt/photos (organized photo storage)
+6. Swap: 16GB (adequate for server use)
 ```
 
-**Why this layout?**
-- **Smaller /home**: Just for user configs and small files
-- **Dedicated /mnt/photos**: Large space ready for organized photos
-- **Dedicated /mnt/projects**: Separate development workspace
-- **Flexibility**: Can easily adjust usage without repartitioning
+#### Leave Other Drives Untouched During Installation
+```
+512GB SSD (Internal SATA): Leave as-is (has your photos)
+1TB SSD (External USB): Leave as-is (has your photos)
+
+Note: These will be configured later after photo consolidation
+```
+
+---
+
+## 🎯 Next Steps After Installation
+
+### Photo Consolidation (Step 6)
+After Ubuntu installation, you'll safely consolidate photos from your old drives:
+1. **Mount old drives temporarily** (without formatting)
+2. **Copy all photos** to `/mnt/photos` (800GB partition ready)
+3. **Organize and deduplicate** photos
+4. **Verify backup** before proceeding to storage setup
+
+### Storage Setup (Step 7)
+After photo consolidation, configure old drives for development:
+- **512GB SSD**: Format for Docker, Projects, Databases
+- **1TB External**: Format for backups
+- **Auto-mounting**: Configure permanent mount points
+- **Performance optimization**: SSD optimizations and directory structure
+
+---
+
+## 📋 Final Storage Layout
+
+### After Complete Setup:
+```
+1TB NVMe (Primary):
+├── EFI Boot: 1GB, /boot/efi
+├── Boot: 1GB, /boot
+├── Root: 50GB, / (OS)
+├── Home: 50GB, /home (configs)
+├── Photos: 800GB, /mnt/photos (organized photos)
+└── Swap: 16GB
+
+512GB SSD (Development):
+├── Docker: 200GB, /opt/docker
+├── Projects: 200GB, /mnt/projects
+└── Databases: 112GB, /mnt/databases
+
+1TB External (Backups):
+└── Backup: 1TB, /mnt/backup
+```
 
 ### 4. User Account Setup
 ```
@@ -157,13 +196,12 @@ Keep it minimal - we'll install everything we need manually.
 
 ## 📋 Installation Summary
 
-Before confirming, verify:
-- **1TB NVMe**: Partitioned with /, /home, /mnt/photos, /mnt/projects, /opt/docker
+Before confirming installation, verify:
+- **1TB NVMe**: Final partitioning (/, /home, /mnt/photos)
 - **Network**: Configured (Ethernet/WiFi)
 - **User account**: Created with sudo access
 - **SSH**: Enabled
-- **Photo drives**: Safely stored (not connected)
-- **Flexibility**: Dedicated partitions ready for future reorganization
+- **Old drives**: Left untouched (will handle photos after installation)
 
 Click **Done** and **Continue** to start installation.
 
@@ -217,15 +255,13 @@ sudo reboot
 After reboot, check your storage layout:
 
 ```bash
-# Check all mounted filesystems
+# Check mounted filesystems - Final Layout
 df -h
 
 Expected output:
-/dev/nvme0n1p3    100G  ... /            (Root filesystem)
-/dev/nvme0n1p4    200G  ... /home        (User configs)
-/dev/nvme0n1p5    100G  ... /opt/docker  (Docker data)
-/dev/nvme0n1p6    400G  ... /mnt/photos  (Future organized photos)
-/dev/nvme0n1p7    150G  ... /mnt/projects (Development projects)
+/dev/nvme0n1p3     50G  ... /            (Root - minimal OS)
+/dev/nvme0n1p4     50G  ... /home        (User configs)
+/dev/nvme0n1p5    800G  ... /mnt/photos  (Photo storage - empty initially)
 ```
 
 ```bash
@@ -233,17 +269,16 @@ Expected output:
 lsblk
 
 Expected structure:
-nvme0n1         1TB NVMe (well-organized partitions)
+nvme0n1         1TB NVMe (Final optimized layout)
 ├─nvme0n1p1     1G  EFI
 ├─nvme0n1p2     1G  Boot
-├─nvme0n1p3   100G  Root /
-├─nvme0n1p4   200G  Home /home  
-├─nvme0n1p5   100G  Docker /opt/docker
-├─nvme0n1p6   400G  Photos /mnt/photos (ready for Step 6)
-├─nvme0n1p7   150G  Projects /mnt/projects
-└─nvme0n1p8    32G  Swap
+├─nvme0n1p3    50G  Root /
+├─nvme0n1p4    50G  Home /home
+├─nvme0n1p5   800G  Photos /mnt/photos
+└─nvme0n1p6    16G  Swap
 
-Your photo drives: Safely stored until Step 6
+sdb             512G SSD (Your old drive - untouched)
+sdc             1TB External (Your old drive - untouched)
 ```
 
 ## 🌐 Network Configuration
@@ -278,30 +313,6 @@ network:
 sudo netplan apply
 ```
 
-### Option 2: WiFi Primary Setup
-```bash
-# WiFi-first configuration
-network:
-  version: 2
-  renderer: networkd
-  wifis:
-    wlp2s0:
-      dhcp4: false
-      addresses:
-        - 192.168.1.100/24
-      gateway4: 192.168.1.1
-      nameservers:
-        addresses:
-          - 8.8.8.8
-          - 1.1.1.1
-      access-points:
-        "YourWiFiNetwork":
-          password: "your-wifi-password"
-  ethernets:
-    enp1s0:
-      dhcp4: true  # Ethernet as backup/secondary
-```
-
 ### Check Interface Names
 ```bash
 # Find your network interface names
@@ -314,18 +325,11 @@ ip link show
 
 ### Test Network
 ```bash
-# Test connectivity (on the mini PC console)
+# Test connectivity
 ping google.com
 
-# Check both connections
-ip addr show  # See all interfaces and IPs
-
 # Test SSH from your Windows PC
-# Use built-in Windows SSH client (Windows 10+):
 ssh your-username@192.168.1.100
-
-# Or use PuTTY if you prefer GUI:
-# Download from: https://www.putty.org/
 ```
 
 ## 🎉 Clean Up Physical Setup
@@ -340,55 +344,15 @@ ssh your-username@192.168.1.100
 ### Keep Connected
 - ✅ **Ethernet Cable** (to router/switch)
 - ✅ **Power Cable** (to UPS)
-- ✅ **UPS** (mini PC + router connected)
-- ✅ **USB 3.0 Backup Drive** (when ready)
+- ✅ **Old drives with photos** (for consolidation)
 
-## ✅ Installation Complete!
+## ✅ Single-Phase Installation Complete!
 
-Your Ubuntu Server is now installed and ready. You have:
+Your Ubuntu Server is now installed with the final optimized layout. You have:
 
-- **✅ Ubuntu Server 22.04 LTS** running on Linux mini PC
-- **✅ Proper storage layout** for your home lab needs
-- **✅ SSH access** enabled for remote management from Windows
-- **✅ Network connectivity** configured (Ethernet + WiFi)
-- **✅ User account** with sudo privileges
-- **✅ Windows photo drives** safely stored for Step 6
+- **✅ Ubuntu Server 22.04 LTS** running with final partition layout
+- **✅ 800GB dedicated photos partition** ready for consolidation
+- **✅ SSH access** for remote management
+- **✅ Old drives preserved** with original photos intact
 
-## 🔄 Next Steps
-
-Ready for **Step 3: System Configuration** where we'll:
-- Set up SSH keys for secure access from Windows
-- Install essential tools and Docker on Linux
-- Configure basic security (firewall, fail2ban)
-- Prepare for NTFS photo drive mounting in Step 6
-
-## 📝 Important Notes for Mixed Environment
-
-### Windows ↔ Linux Compatibility
-- **SSH from Windows**: Built-in SSH client or PuTTY
-- **File transfers**: We'll set up secure methods in Step 3
-- **Photo drives**: NTFS drives will be safely readable on Linux
-- **Development**: Your Java/Python projects will work great on Linux
-
-## 🛠️ Troubleshooting
-
-### Boot Issues
-- **GRUB not found**: Check UEFI boot order in BIOS
-- **Kernel panic**: Try booting from USB again, check RAM seating
-
-### Storage Issues
-- **Mount failed**: Check /etc/fstab for correct device names
-- **Permission denied**: Verify mount points exist and have correct permissions
-
-### Network Issues
-- **No connectivity**: Check cable, verify interface name in netplan
-- **DNS not working**: Verify nameservers in netplan configuration
-
-### SSH Issues
-- **Connection refused**: Verify SSH service running: `sudo systemctl status ssh`
-- **Permission denied**: Check username, password, verify SSH enabled during install
-
----
-
-**💡 Pro Tip**: Take a snapshot of your VM or create a backup image after successful installation - this gives you a clean baseline to restore if needed!
-TODO: Think about arranging partition on 1Tb internal disk (is it necessaey /mnt/projects if I will use separated disk with 512Gb? and for docker and home can be reduced)
+**Next**: Photo consolidation (Step 6) and storage setup (Step 7) for complete configuration.
