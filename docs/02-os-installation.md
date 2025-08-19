@@ -70,7 +70,7 @@ Invoke-WebRequest -Uri "https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-se
 
 ### Check Hardware Detection
 - Verify 32GB RAM detected
-- Confirm all SSDs visible (1TB NVMe + 512GB SATA)
+- Confirm all SSDs visible (1TB NVMe)
 - Check Ethernet connection
 
 ## 🚀 Installation Process
@@ -113,8 +113,8 @@ Device: /dev/nvme0n1 (1TB NVMe) - Final optimized layout
 1. EFI Boot: 1GB, fat32, /boot/efi
 2. Boot: 1GB, ext4, /boot
 3. Root: 50GB, ext4, / (minimal OS)
-4. Home: 50GB, ext4, /home (user configs only)
-5. Photos: 800GB, ext4, /mnt/photos (organized photo storage)
+4. Home: 20GB, ext4, /home (user configs only)
+5. Photos: 911GB, ext4, /data (organized photo storage)
 6. Swap: 16GB (adequate for server use)
 ```
 
@@ -133,7 +133,7 @@ Note: These will be configured later after photo consolidation
 ### Photo Consolidation (Step 6)
 After Ubuntu installation, you'll safely consolidate photos from your old drives:
 1. **Mount old drives temporarily** (without formatting)
-2. **Copy all photos** to `/mnt/photos` (800GB partition ready)
+2. **Copy all photos** to `/data` (911GB partition ready)
 3. **Organize and deduplicate** photos
 4. **Verify backup** before proceeding to storage setup
 
@@ -154,14 +154,14 @@ After photo consolidation, configure old drives for development:
 ├── EFI Boot: 1GB, /boot/efi
 ├── Boot: 1GB, /boot
 ├── Root: 50GB, / (OS)
-├── Home: 50GB, /home (configs)
-├── Photos: 800GB, /mnt/photos (organized photos)
+├── Home: 20GB, /home (configs)
+├── Photos: 911GB, /data (organized photos)
 └── Swap: 16GB
 
 512GB SSD (Development):
-├── Docker: 200GB, /opt/docker
-├── Projects: 200GB, /mnt/projects
-└── Databases: 112GB, /mnt/databases
+├── Docker: /srv/docker
+├── Projects: /srv/projects
+└── Databases: /srv/databases
 
 1TB External (Backups):
 └── Backup: 1TB, /mnt/backup
@@ -197,7 +197,7 @@ Keep it minimal - we'll install everything we need manually.
 ## 📋 Installation Summary
 
 Before confirming installation, verify:
-- **1TB NVMe**: Final partitioning (/, /home, /mnt/photos)
+- **1TB NVMe**: Final partitioning (/, /home, /data)
 - **Network**: Configured (Ethernet/WiFi)
 - **User account**: Created with sudo access
 - **SSH**: Enabled
@@ -260,8 +260,8 @@ df -h
 
 Expected output:
 /dev/nvme0n1p3     50G  ... /            (Root - minimal OS)
-/dev/nvme0n1p4     50G  ... /home        (User configs)
-/dev/nvme0n1p5    800G  ... /mnt/photos  (Photo storage - empty initially)
+/dev/nvme0n1p4     20G  ... /home        (User configs)
+/dev/nvme0n1p5    911GB  ... /data  (Photo storage - empty initially)
 ```
 
 ```bash
@@ -273,8 +273,8 @@ nvme0n1         1TB NVMe (Final optimized layout)
 ├─nvme0n1p1     1G  EFI
 ├─nvme0n1p2     1G  Boot
 ├─nvme0n1p3    50G  Root /
-├─nvme0n1p4    50G  Home /home
-├─nvme0n1p5   800G  Photos /mnt/photos
+├─nvme0n1p4    20G  Home /home
+├─nvme0n1p5   911GB  Photos /data
 └─nvme0n1p6    16G  Swap
 
 sdb             512G SSD (Your old drive - untouched)
