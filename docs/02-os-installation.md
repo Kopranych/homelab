@@ -136,6 +136,15 @@ Confirm your password: Same password
 ✅ Import SSH identity: No (we'll set up keys later)
 ```
 
+**Note**: During installation, you'll see this option in the Ubuntu installer interface. If you need to install SSH manually later:
+```bash
+# If SSH wasn't installed during setup, run this after installation:
+sudo apt update
+sudo apt install openssh-server
+sudo systemctl enable ssh
+sudo systemctl start ssh
+```
+
 ### 6. Software Selection
 
 #### Recommended Snaps
@@ -243,11 +252,20 @@ ip addr show
 # Test internet connectivity
 ping google.com
 
-# Note your current local IP for the next step
+# Note your current local IP for testing local SSH
 hostname -I
 ```
 
-**Note**: We're not setting up static IP because Tailscale will give us a stable IP for remote access.
+### Test Local SSH (Optional)
+```bash
+# From another device on your home network (Windows PC, phone on same WiFi):
+ssh your-username@192.168.1.XXX  # Replace XXX with actual IP
+
+# This works locally but NOT from internet yet
+# Tailscale in Step 3 will enable internet access
+```
+
+**Important**: This SSH only works from devices on your home network. Internet access requires Tailscale (Step 3).
 
 ## ✅ Installation Complete!
 

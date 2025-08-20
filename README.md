@@ -65,11 +65,12 @@ Each of these top-level steps will have its own detailed guide:
 - [Basic Config + Tailscale Setup](docs/03-basic-config-tailscale.md)
 
 ## ⚡ Quick Start
-1. **Prep**: Create free Tailscale account at [tailscale.com](https://tailscale.com)
-2. **Install**: Ubuntu Server with automatic networking
-3. **Configure**: System updates + Tailscale (5 minutes)
-4. **Go headless**: SSH via Tailscale, disconnect monitor/keyboard
+1. **Prep**: Create free Tailscale account at [tailscale.com](https://tailscale.com) (5 minutes)
+2. **Install**: Ubuntu Server with automatic networking + SSH enabled
+3. **Configure**: System updates + Tailscale setup (5 minutes)
+4. **Test**: SSH access from internet via Tailscale
+5. **Go headless**: Disconnect monitor/keyboard, manage remotely
 
 ---
 
-Start with steps 1-3 to get a fully accessible server, then continue with your specific needs.
+Start with steps 1-3 to get a fully accessible server from anywhere on the internet.
