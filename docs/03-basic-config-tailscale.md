@@ -117,8 +117,16 @@ homelab-server.tail-scale.ts.net
 # Allow SSH (port 22) - so you can remote control the server
 sudo ufw allow ssh
 
-# Allow Tailscale interface - so VPN traffic works properly
+# Check your Tailscale interface name first
+ip link show | grep tailscale
+# OR
+ip addr show | grep -A2 "100\.64\."
+
+# Allow Tailscale interface (usually tailscale0)
 sudo ufw allow in on tailscale0
+
+# If your interface has a different name, use that instead:
+# sudo ufw allow in on ts0
 
 # Enable firewall protection
 sudo ufw enable
