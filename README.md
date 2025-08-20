@@ -1,6 +1,6 @@
 # Home Lab Mini PC Server
 
-A simple guide to set up a mini PC home server for family photos, development projects, and personal services with internet access.
+A simple guide to set up a mini PC home server for family photos, development projects, and personal services with secure internet access.
 
 ## 🎯 Goal
 Set up a mini PC at home that you can access from anywhere on the internet to:
@@ -20,21 +20,23 @@ Set up a mini PC at home that you can access from anywhere on the internet to:
 - Install Ubuntu Server 22.04 LTS
 - Create user account with sudo privileges
 - Enable SSH access
+- Use automatic DHCP networking (no static IP needed)
 
-### 3. Basic System Configuration
-- Set static IP address on your local network
+### 3. Basic System Configuration + Tailscale
 - Update system packages
+- **Install Tailscale VPN** for secure remote access
 - Configure basic security (firewall, SSH keys)
+- Test remote SSH access via Tailscale
+- **Remove keyboard/monitor** (headless operation)
 
-### 4. Internet Access Setup
-- **Tailscale VPN**: Set up Tailscale for secure remote access
-- No port forwarding needed on your router
-- Works from anywhere with encrypted connections
-- Easy device management through Tailscale admin panel
-
-### 5. Install Docker
+### 4. Docker Setup
 - Install Docker and Docker Compose
 - Set up basic container management
+
+### 5. Photo Storage Setup
+- Consolidate photos from old drives
+- Organize and deduplicate photos
+- Configure additional storage drives
 
 ### 6. Deploy Core Services
 - Reverse proxy (Traefik or Nginx)
@@ -50,18 +52,24 @@ Set up a mini PC at home that you can access from anywhere on the internet to:
 
 Each of these top-level steps will have its own detailed guide:
 - `01-hardware-setup.md`
-- `02-os-installation.md`
-- `03-system-config.md`
-- `04-internet-access.md`
-- `05-docker-setup.md`
+- `02-os-installation.md` *(simplified networking)*
+- `03-basic-config-tailscale.md` *(combines system config + Tailscale)*
+- `04-docker-setup.md`
+- `05-photo-storage.md`
 - `06-core-services.md`
 - `07-applications.md`
 
 ## 🔗 Quick Links
 - [Hardware Requirements](docs/01-hardware-setup.md)
 - [OS Installation Guide](docs/02-os-installation.md)
-- [Tailscale Setup Guide](docs/04-tailscale-setup.md)
+- [Basic Config + Tailscale Setup](docs/03-basic-config-tailscale.md)
+
+## ⚡ Quick Start
+1. **Prep**: Create free Tailscale account at [tailscale.com](https://tailscale.com)
+2. **Install**: Ubuntu Server with automatic networking
+3. **Configure**: System updates + Tailscale (5 minutes)
+4. **Go headless**: SSH via Tailscale, disconnect monitor/keyboard
 
 ---
 
-Start with step 1-3 to get a basic working server, then choose your internet access method in step 4.
+Start with steps 1-3 to get a fully accessible server, then continue with your specific needs.

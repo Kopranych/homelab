@@ -1,7 +1,7 @@
 # Step 2: OS Installation & Initial Setup
 
 ## 🎯 Goal
-Install Ubuntu Server 22.04 LTS on your mini PC with final storage configuration for your home lab setup.
+Install Ubuntu Server 22.04 LTS on your mini PC with automatic networking (no static IP needed since we'll use Tailscale).
 
 ## 🐧 Why Ubuntu Server 22.04 LTS?
 - **Long Term Support**: Updates until 2027
@@ -46,7 +46,7 @@ Invoke-WebRequest -Uri "https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-se
 
 ## 🖥️ Temporary Setup for Installation
 
-**You'll need these items temporarily for the initial installation:**
+**You'll need these items temporarily - we'll remove them after Tailscale setup:**
 
 ### Required for Installation
 - **USB Keyboard**: Any USB keyboard for setup
@@ -54,10 +54,10 @@ Invoke-WebRequest -Uri "https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-se
 - **HDMI Cable**: To connect mini PC to screen
 - **USB Drive**: With Ubuntu Server installer (created above)
 
-### After Installation
+### After Tailscale Setup
 - **Remove**: Keyboard, monitor, HDMI cable (won't need them anymore)
 - **Keep connected**: Ethernet cable, power, UPS
-- **Access**: Everything via SSH from your main PC/laptop
+- **Access**: Everything via SSH through Tailscale
 
 ## 🖥️ BIOS/UEFI Setup
 
@@ -82,11 +82,10 @@ Invoke-WebRequest -Uri "https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-se
 ### 2. Initial Setup
 - **Language**: English
 - **Keyboard**: Your keyboard layout
-- **Network**: Configure connections
-    - **Ethernet**: Should auto-detect and connect
-    - **WiFi**: Can configure during installation or later
-    - Set static IP if you know your network setup
-    - Or use DHCP for now (can change later)
+- **Network**: Use automatic configuration
+    - **Ethernet**: Should auto-detect and connect via DHCP ✅
+    - **WiFi**: Can configure if needed, also use DHCP ✅
+    - **No static IP needed** - Tailscale will handle stable addressing
 
 ### 3. Storage Configuration
 
@@ -97,12 +96,6 @@ This is the most important part for your setup!
 Select: "Custom storage layout"
 Not: "Use entire disk" (we need specific partitioning)
 ```
-
-## 🗂️ Single-Phase Storage Strategy
-
-**We'll set up the final configuration immediately, leaving old drives untouched until photo consolidation:**
-
----
 
 ## 📦 Final Installation Partitioning
 
@@ -124,47 +117,6 @@ Device: /dev/nvme0n1 (1TB NVMe) - Final optimized layout
 1TB SSD (External USB): Leave as-is (has your photos)
 
 Note: These will be configured later after photo consolidation
-```
-
----
-
-## 🎯 Next Steps After Installation
-
-### Photo Consolidation (Step 6)
-After Ubuntu installation, you'll safely consolidate photos from your old drives:
-1. **Mount old drives temporarily** (without formatting)
-2. **Copy all photos** to `/data` (911GB partition ready)
-3. **Organize and deduplicate** photos
-4. **Verify backup** before proceeding to storage setup
-
-### Storage Setup (Step 7)
-After photo consolidation, configure old drives for development:
-- **512GB SSD**: Format for Docker, Projects, Databases
-- **1TB External**: Format for backups
-- **Auto-mounting**: Configure permanent mount points
-- **Performance optimization**: SSD optimizations and directory structure
-
----
-
-## 📋 Final Storage Layout
-
-### After Complete Setup:
-```
-1TB NVMe (Primary):
-├── EFI Boot: 1GB, /boot/efi
-├── Boot: 1GB, /boot
-├── Root: 50GB, / (OS)
-├── Home: 20GB, /home (configs)
-├── Photos: 911GB, /data (organized photos)
-└── Swap: 16GB
-
-512GB SSD (Development):
-├── Docker: /srv/docker
-├── Projects: /srv/projects
-└── Databases: /srv/databases
-
-1TB External (Backups):
-└── Backup: 1TB, /mnt/backup
 ```
 
 ### 4. User Account Setup
@@ -198,7 +150,7 @@ Keep it minimal - we'll install everything we need manually.
 
 Before confirming installation, verify:
 - **1TB NVMe**: Final partitioning (/, /home, /data)
-- **Network**: Configured (Ethernet/WiFi)
+- **Network**: Auto-configured DHCP (Ethernet/WiFi)
 - **User account**: Created with sudo access
 - **SSH**: Enabled
 - **Old drives**: Left untouched (will handle photos after installation)
@@ -281,78 +233,34 @@ sdb             512G SSD (Your old drive - untouched)
 sdc             1TB External (Your old drive - untouched)
 ```
 
-## 🌐 Network Configuration
+## 🌐 Network Verification
 
-### Option 1: Ethernet Primary with WiFi Backup (Recommended)
+### Simple DHCP Check
 ```bash
-# Edit netplan configuration
-sudo nano /etc/netplan/00-installer-config.yaml
+# Check your current IP (will change, but that's okay)
+ip addr show
 
-# Ethernet primary + WiFi backup configuration:
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    enp1s0:  # Your ethernet interface name
-      dhcp4: false
-      addresses:
-        - 192.168.1.100/24  # Choose available IP in your network
-      gateway4: 192.168.1.1  # Your router IP
-      nameservers:
-        addresses:
-          - 8.8.8.8
-          - 1.1.1.1
-  wifis:
-    wlp2s0:  # Your WiFi interface name
-      dhcp4: true
-      access-points:
-        "YourWiFiNetwork":
-          password: "your-wifi-password"
-
-# Apply changes
-sudo netplan apply
-```
-
-### Check Interface Names
-```bash
-# Find your network interface names
-ip link show
-
-# Common names:
-# Ethernet: enp1s0, eth0, enp0s31f6
-# WiFi: wlp2s0, wlan0, wlp0s20f3
-```
-
-### Test Network
-```bash
-# Test connectivity
+# Test internet connectivity
 ping google.com
 
-# Test SSH from your Windows PC
-ssh your-username@192.168.1.100
+# Note your current local IP for the next step
+hostname -I
 ```
 
-## 🎉 Clean Up Physical Setup
+**Note**: We're not setting up static IP because Tailscale will give us a stable IP for remote access.
 
-### After Successful Installation & SSH Test
-**You can now disconnect and store these items:**
-- ❌ **USB Keyboard** (not needed anymore)
-- ❌ **Monitor/TV** (not needed anymore)
-- ❌ **HDMI Cable** (not needed anymore)
-- ❌ **Installation USB Drive** (keep for future use)
+## ✅ Installation Complete!
 
-### Keep Connected
-- ✅ **Ethernet Cable** (to router/switch)
-- ✅ **Power Cable** (to UPS)
-- ✅ **Old drives with photos** (for consolidation)
-
-## ✅ Single-Phase Installation Complete!
-
-Your Ubuntu Server is now installed with the final optimized layout. You have:
+Your Ubuntu Server is now installed with:
 
 - **✅ Ubuntu Server 22.04 LTS** running with final partition layout
-- **✅ 800GB dedicated photos partition** ready for consolidation
-- **✅ SSH access** for remote management
+- **✅ Automatic DHCP networking** (simple and reliable)
+- **✅ SSH enabled** for remote access
+- **✅ 911GB dedicated photos partition** ready for consolidation
 - **✅ Old drives preserved** with original photos intact
 
-**Next**: Photo consolidation (Step 6) and storage setup (Step 7) for complete configuration.
+## 🎯 Next Steps
+
+**Keep keyboard/monitor connected** for one more step:
+
+**Next**: Basic System Configuration + Tailscale Setup (Step 3) - this will enable remote access so you can disconnect the keyboard and monitor.
