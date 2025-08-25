@@ -261,8 +261,9 @@ ls -la /home/$USER/manifests/
 
 ## Next Steps Preview
 
-- **Phase 2**: Duplicate Analysis & Removal
-- **Phase 3**: Content Verification & Sorting
-- **Phase 4**: Final Organization & Validation
+- **Phase 2**: Duplicate Analysis & Visual Verification
+- **Phase 3**: Safe Duplicate Removal (after manual verification)
+- **Phase 4**: Content Verification & Sorting
+- **Phase 5**: Final Organization & Validation
 
 **Time Estimate for Step 1**: 30 minutes setup + 2-6 hours for discovery (depending on file count)
