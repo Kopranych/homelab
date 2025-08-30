@@ -1,269 +1,403 @@
-# Complete Photo Recovery & Deduplication Guide
+# Safe Photo Consolidation - Complete Guide
 
-**System Setup:**
-- Mini PC with 1TB NVMe drive (optimized partitioning)
-- Two old drives: 512GB SSD (sdb) and 1TB External (sdc)
-- Millions of files with potential duplicates across complex folder structures
-- Goal: Clean, organized photo collection in `/data` with verification
+**The safest approach to consolidate family photos: Copy everything first, process only the copies, never touch original drives.**
+
+## 🎯 Overview
+
+This guide walks you through safely consolidating photos and videos from multiple old Windows drives into a clean, deduplicated collection. The **copy-first approach** ensures your original photos are never at risk.
+
+### What This Process Achieves
+
+✅ **All unique photos preserved** - No photos lost, ever  
+✅ **Only best quality kept** - RAW > high-res JPEG > compressed  
+✅ **Intelligent organization** - Meaningful folder structure maintained  
+✅ **Storage optimized** - Significant space savings through deduplication  
+✅ **Completely safe** - Original drives never modified  
+✅ **Human verified** - Web interface for visual confirmation  
+✅ **Photos AND videos** - Handles all media formats  
+✅ **Fully reversible** - Can restart any phase safely  
+
+## 🔒 Why Copy-First is Safer
+
+### Problems with Direct Processing
+❌ **Risky**: Working directly on original drives  
+❌ **Irreversible**: Mistakes could lose photos permanently  
+❌ **Stressful**: Fear of data loss during process  
+❌ **Blocks cleanup**: Can't format drives until certain everything worked  
+
+### Benefits of Copy-First
+✅ **100% Safe**: Original drives never touched  
+✅ **Reversible**: Can restart anytime  
+✅ **Parallel workflow**: Process copies while keeping originals safe  
+✅ **Enables immediate cleanup**: Format drives right after successful copy  
+
+## 📋 Complete Workflow
+
+### **Prerequisites**
+- Mini PC with Ubuntu Server 22.04 LTS
+- `/data` partition with sufficient space (see space calculation below)
+- Old Windows drives mounted (e.g., `/media/sdb1`, `/media/sdc1`)
+- Basic system setup completed (Phases 1-5)
+
+### **Space Requirements Calculation**
+```bash
+# Check total source drive space
+du -sh /media/sdb1 /media/sdc1
+# Ensure /data has: source_total_size + 100GB safety buffer
+
+# Example output:
+# 450GB /media/sdb1
+# 800GB /media/sdc1  
+# Need: ~1350GB free space on /data partition
+```
 
 ---
 
-## Phase 1: System Preparation & Discovery
+## 🚀 Phase 1: Safe Copy Operation
 
-### Step 1: Verify System Setup
+**Goal**: Copy ALL media files from old drives to `/data/incoming/` without touching originals.
+
+### **Execution**
 ```bash
-# Check your partition layout
+# Recommended: Use screen for long-running operations
+screen -S photo-copy
+./scripts/media/copy_all_media.sh
+
+# Detach from screen: Ctrl+A, then D
+# Reattach later: screen -r photo-copy
+```
+
+**Why use screen/tmux?**
+- Photo copying can take several hours
+- Protects against SSH disconnections  
+- Allows you to disconnect and check progress later
+- Essential for network stability during large operations
+
+### **What Happens**
+1. **Scans all configured drives** for photos/videos
+2. **Preserves folder structure** completely 
+3. **Creates SHA256 manifests** for integrity verification
+4. **Shows progress** with visual indicators
+5. **Verifies each copy** with hash comparison
+6. **Never modifies originals** - purely read operations
+
+### **Result Structure**
+```
+/data/incoming/
+├── sdb1/                    # Files from first old drive
+│   ├── Photos/
+│   ├── Videos/  
+│   └── [original folder structure]
+└── sdc1/                    # Files from second old drive
+    ├── 2023/
+    ├── 2024/
+    └── [original folder structure]
+```
+
+### **Safety Check**
+```bash
+# After completion:
+ls -la /data/incoming/
+# Should see your drive folders with all photos copied
+
+# Verify manifests created:
+ls -la /data/manifests/
+# Should see: sdb1_original_manifest.sha256, sdc1_original_manifest.sha256
+```
+
+**🔓 MILESTONE: Original drives now safe to disconnect!**
+
+---
+
+## 🔍 Phase 2: Duplicate Analysis
+
+**Goal**: Find duplicates and rank by quality, working ONLY on copied files.
+
+### **Execution**  
+```bash
+# Continue in screen session or start new one
+screen -r photo-copy  # or screen -S photo-analysis
+./scripts/media/analyze_copied_files.sh
+```
+
+### **What Happens**
+1. **Creates new manifest** from copied files in `/data/incoming/`
+2. **Finds identical files** using SHA256 hash comparison
+3. **Applies quality scoring** from centralized configuration
+4. **Ranks duplicates** (RAW > high-res JPEG > compressed)
+5. **Considers folder context** (organized > backup > random)
+6. **Generates detailed reports** with recommendations
+
+### **Quality Scoring Example**
+```
+=== Duplicate Group 00042 ===
+Files ranked by quality (KEEP first, REMOVE others):
+
+[1] KEEP - Score: 90/100 🎯 BEST QUALITY
+    Path: sdb1/2023/Wedding/Canon_RAW/IMG_5847.CR2
+    Format: Canon RAW file  
+    Size: 24.5MB
+    Factors: +20 RAW bonus, +10 organized folder
+    
+[2] REMOVE - Score: 72/100
+    Path: sdc1/Photos/Wedding_JPEG/IMG_5847.jpg
+    Format: High-quality JPEG
+    Size: 8.2MB  
+    Factors: +15 high-res JPEG, +10 organized folder
+    
+[3] REMOVE - Score: 45/100  
+    Path: sdb1/Backup/Old_Photos/IMG_5847_small.jpg
+    Format: Compressed JPEG
+    Size: 3.1MB
+    Factors: +5 standard JPEG, -10 backup folder
+
+Space savings: 11.3MB
+```
+
+### **Result Files**
+```
+/data/duplicates/
+├── reports/
+│   └── copied_files_analysis.txt    # Summary of all findings
+└── groups/
+    ├── group_00001.txt             # Individual duplicate group
+    ├── group_00002.txt
+    └── [one file per group...]
+```
+
+---
+
+## 👁️ Phase 3: Human Verification
+
+**Goal**: Visual confirmation through web interface before any destructive operations.
+
+### **Execution**
+```bash
+./scripts/setup/setup_nextcloud_verification.sh
+```
+
+### **What Happens**
+1. **Deploys Nextcloud** via Docker on port 8080
+2. **Mounts verification folders** for web browsing
+3. **Creates verification guide** with detailed instructions
+4. **Generates access credentials** automatically
+
+### **Web Access**
+- **URL**: `http://your-server:8080`
+- **Login**: Auto-generated admin credentials (displayed after setup)
+- **Navigation**: Files → verification
+
+### **Verification Interface Structure**
+```
+📁 verification/
+├── 📄 VERIFICATION_GUIDE.md          # Step-by-step instructions
+├── 📁 incoming/                      # Browse your copied photos
+│   ├── 📁 sdb1/                     # First drive photos
+│   └── 📁 sdc1/                     # Second drive photos  
+└── 📁 duplicates/                    # Analysis results
+    ├── 📁 reports/                   # Summary reports
+    └── 📁 groups/                    # Individual duplicate groups
+```
+
+### **Verification Checklist**
+- [ ] **Browse photos** - Confirm important photos are present
+- [ ] **Check folder structure** - Verify organization makes sense
+- [ ] **Review duplicate analysis** - Read summary report
+- [ ] **Spot-check groups** - Verify quality rankings look correct
+- [ ] **Confirm space savings** - Check if savings are reasonable
+
+### **Common Verification Questions**
+- ✅ Are RAW files ranked higher than JPEG versions?
+- ✅ Are organized folders preferred over backup locations?  
+- ✅ Do large files rank higher than small versions?
+- ✅ Are important family photos preserved?
+- ✅ Does the duplicate percentage seem reasonable?
+
+---
+
+## ✨ Phase 4: Final Consolidation
+
+**Goal**: Remove duplicates from copied files and create final clean collection.
+
+### **Execution**
+```bash
+# Continue in screen session 
+screen -r photo-copy  # or screen -S photo-consolidate
+./scripts/media/consolidate_copied_files.sh
+```
+
+### **What Happens**
+1. **Processes each duplicate group** according to analysis
+2. **Keeps the highest quality file** from each group
+3. **Removes lower quality duplicates** from `/data/incoming/`
+4. **Copies best versions** to `/data/final/`
+5. **Creates backups** of removed files (if configured)
+6. **Processes unique files** (no duplicates found)
+7. **Generates comprehensive report** with statistics
+
+### **Safety Features**
+- **Original drives untouched** - Ultimate backup always available
+- **Optional backup** - Additional backup of removed files (disabled by default)
+- **Detailed logging** - Complete record of all operations
+- **Space verification** - Confirms expected space savings
+- **Integrity checks** - Verifies all operations completed successfully
+
+### **Result Structure**
+```
+/data/final/                         # Clean consolidated collection
+├── 2023/
+│   ├── Wedding/
+│   └── Vacation/
+├── 2024/
+│   └── Family_Photos/
+└── [organized structure]
+
+/data/backup/consolidation/          # Optional backups (disabled by default)
+├── group_00001/                     # Only if backup_before_removal: true
+└── group_00002/                     # Original drives are the real backup
+```
+
+---
+
+## 🧹 Phase 5: Original Drive Cleanup
+
+**Goal**: Format original drives for reuse in Phase 7 Storage Setup.
+
+### **Manual Drive Formatting**
+```bash
+# List drives to confirm which ones to format
 lsblk
 
-# Expected output:
-# nvme0n1         1TB NVMe
-# ├─nvme0n1p1     1G  EFI
-# ├─nvme0n1p2     1G  Boot  
-# ├─nvme0n1p3    50G  Root /
-# ├─nvme0n1p4    20G  Home /home
-# ├─nvme0n1p5   911GB Photos /data
-# └─nvme0n1p6    16G  Swap
-# sdb             512G SSD (source drive 1)
-# sdc             1TB External (source drive 2)
+# Format each old drive (AFTER verifying final collection)
+sudo fdisk /dev/sdb    # Format first old drive
+sudo fdisk /dev/sdc    # Format second old drive
 
-# Verify mount points
-df -h | grep -E "(nvme0n1|sdb|sdc)"
-
-# Check available space on target partition
-df -h /data
+# Alternative: Quick format
+sudo mkfs.ext4 /dev/sdb1
+sudo mkfs.ext4 /dev/sdc1
 ```
 
-### Step 2: Create Working Directories
-```bash
-# Create organized structure on target drive
-sudo mkdir -p /data/{incoming,staging,final,duplicates,logs}
-sudo mkdir -p /data/staging/{verified,rejected}
-sudo mkdir -p /data/final/{by-date,by-folder,metadata}
+### **Safety Reminders**
+- ✅ **Verify final collection** first - Check `/data/final/` thoroughly
+- ✅ **Test photo access** - Open some random photos to confirm they work
+- ✅ **Keep Nextcloud running** - For continued access to photos
+- ✅ **Only format after** complete satisfaction with results
 
-# Set proper ownership
-sudo chown -R $USER:$USER /data
+---
 
-# Create temporary working space
-mkdir -p /home/$USER/{scripts,manifests,reports}
+## ⚙️ Configuration Customization
+
+### **Quality Scoring Adjustment**
+```yaml
+# In config.yml or config.local.yml
+photo_consolidation:
+  quality:
+    format_scores:
+      raw_files: 95        # Increase RAW file priority
+      high_res_jpg: 80     # Increase large JPEG priority
+      
+    folder_bonuses:
+      organized: 15        # Bigger bonus for organized folders
+      backup: -15          # Bigger penalty for backup folders
 ```
 
-### Step 3: Install Required Tools
-```bash
-# Update system
-sudo apt update
-
-# Install deduplication and analysis tools
-sudo apt install -y \
-  fdupes \        # Find and remove duplicate files by comparing content
-  rdfind \        # Advanced duplicate finder with dry-run capabilities
-  exiftool \      # Read/write metadata from photos/videos (dates, GPS, camera info)
-  imagemagick \   # Image processing toolkit (convert, resize, analyze images)
-  ffmpeg \        # Video processing toolkit (convert, analyze, extract info from videos)
-  tree \          # Display directory structure in tree format for verification
-  pv \            # Pipe Viewer - shows progress bars for long-running operations
-  parallel \      # Run commands in parallel for faster processing
-  jq \            # JSON processor for handling metadata and configuration files
-  sqlite3         # Database for organizing and querying file information
-
-# Verify installation
-echo "Tools installed successfully:"
-which fdupes rdfind exiftool convert ffmpeg pv parallel jq
-```
-
-### Step 4: Deploy Discovery Script
-```bash
-# Option A: Copy from your local development machine (RECOMMENDED)
-# From your local machine, copy the script to your mini PC:
-scp scripts/media/discover_media.sh $USER@$HOMELAB_HOST:/home/$USER/scripts/discover_media.sh
-
-# Make it executable on the remote machine
-ssh $USER@$HOMELAB_HOST "chmod +x /home/$USER/scripts/discover_media.sh"
-
-# Option B: Create script directly on mini PC (if needed)
-# Only use this if you can't use scp
-cat > /home/$USER/scripts/discover_media.sh << 'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Configuration - Comprehensive photo and video formats
-PHOTO_EXT='jpg|jpeg|png|heic|heif|gif|bmp|tiff|tif|webp|cr2|nef|arw|dng|raf|orf|rw2|pef|srw|x3f'
-VIDEO_EXT='mp4|mov|avi|mkv|wmv|m4v|3gp|mts|m2ts|flv|webm|mpg|mpeg|m2v|vob|ts|asf|rm|rmvb|ogv|divx|xvid'
-EXT="${PHOTO_EXT}|${VIDEO_EXT}"
-LOGFILE="/data/logs/discovery_$(date +%Y%m%d_%H%M%S).log"
-MANIFEST_DIR="/home/$USER/manifests"
-
-# Ensure output directory exists
-mkdir -p "$MANIFEST_DIR"
-mkdir -p "$(dirname "$LOGFILE")"
-
-# Function to log with timestamp
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
-}
-
-# Function to discover files from a source
-discover_source() {
-    local source="$1"
-    local output_name="$2"
-    local manifest="$MANIFEST_DIR/${output_name}_manifest.sha256"
-    local stats="$MANIFEST_DIR/${output_name}_stats.txt"
+### **Process Control**
+```yaml
+photo_consolidation:
+  process:
+    parallel_jobs: 6       # Match your CPU cores
+    preserve_structure: true # Keep original folder organization
     
-    log "Starting discovery of: $source"
-    log "Output manifest: $manifest"
-    
-    # Clear previous results
-    > "$manifest"
-    > "$stats"
-    
-    # Count total files first (for progress)
-    log "Counting files in $source..."
-    local total_files
-    total_files=$(find "$source" -type f -iregex ".*\.($EXT)$" | wc -l)
-    log "Found $total_files media files to process"
-    
-    # Create manifest with progress
-    log "Creating SHA256 manifest..."
-    find "$source" -type f -iregex ".*\.($EXT)$" -print0 | \
-        pv -l -s "$total_files" | \
-        xargs -0 -P "$(nproc)" -I {} sha256sum {} >> "$manifest"
-    
-    # Generate statistics
-    echo "=== Discovery Statistics for $source ===" > "$stats"
-    echo "Total files: $total_files" >> "$stats"
-    echo "Manifest created: $(date)" >> "$stats"
-    echo "Source path: $source" >> "$stats"
-    echo "" >> "$stats"
-    
-    # File type breakdown
-    echo "=== File Types Found ===" >> "$stats"
-    echo "Photos:" >> "$stats"
-    awk '{print $2}' "$manifest" | \
-        sed 's/.*\.//' | \
-        tr '[:upper:]' '[:lower:]' | \
-        grep -E "^($PHOTO_EXT)$" | \
-        sort | uniq -c | sort -nr >> "$stats"
-    
-    echo "" >> "$stats"
-    echo "Videos:" >> "$stats"
-    awk '{print $2}' "$manifest" | \
-        sed 's/.*\.//' | \
-        tr '[:upper:]' '[:lower:]' | \
-        grep -E "^($VIDEO_EXT)$" | \
-        sort | uniq -c | sort -nr >> "$stats"
-    
-    echo "" >> "$stats"
-    echo "All formats:" >> "$stats"
-    awk '{print $2}' "$manifest" | \
-        sed 's/.*\.//' | \
-        tr '[:upper:]' '[:lower:]' | \
-        sort | uniq -c | sort -nr >> "$stats"
-    
-    log "Discovery complete for $source"
-    log "Files processed: $total_files"
-    log "Manifest: $manifest"
-    log "Statistics: $stats"
-}
-
-# Main execution
-main() {
-    if [ $# -eq 0 ]; then
-        echo "Usage: $0 <source1> [source2] ..."
-        echo "Example: $0 /media/sdb1 /media/sdc1"
-        exit 1
-    fi
-    
-    log "=== Media Discovery Started ==="
-    log "Processing ${#@} source(s): $*"
-    
-    local source_num=1
-    for source in "$@"; do
-        if [ ! -d "$source" ]; then
-            log "ERROR: Source directory '$source' does not exist"
-            continue
-        fi
-        
-        discover_source "$source" "source${source_num}"
-        ((source_num++))
-    done
-    
-    log "=== Discovery Complete ==="
-    log "Check manifests in: $MANIFEST_DIR"
-    log "Full log: $LOGFILE"
-}
-
-# Run main function
-main "$@"
-EOF
-
-# Make script executable
-chmod +x /home/$USER/scripts/discover_media.sh
-
-# Verify the script
-ls -la /home/$USER/scripts/discover_media.sh
-```
-
-### Step 5: Mount Source Drives (if not already mounted)
-```bash
-# Check if drives are already mounted
-lsblk | grep -E "(sdb|sdc)"
-
-# If not mounted, create mount points and mount
-sudo mkdir -p /media/{source1,source2}
-
-# Mount the drives (adjust partition numbers as needed)
-sudo mount /dev/sdb1 /media/source1
-sudo mount /dev/sdc1 /media/source2
-
-# Verify mounts
-df -h | grep -E "(source1|source2)"
-```
-
-### Step 6: Run Initial Discovery
-```bash
-# Start the comprehensive discovery process
-# This will take a while - run in screen for safety (prevents interruption if SSH disconnects)
-screen -S discovery
-
-# In the screen session, run the discovery:
-/home/$USER/scripts/discover_media.sh /media/source1 /media/source2
-
-# To detach from screen: Ctrl+A, then D
-# To reattach later: screen -r discovery
-
-# Monitor progress (from another terminal):
-tail -f /data/logs/discovery_*.log
-
-# When complete, check results:
-ls -la /home/$USER/manifests/
-
-# Screen commands reference:
-# screen -S discovery     # Create new session named 'discovery'
-# screen -r discovery     # Reattach to session
-# screen -list           # List all sessions
-# Ctrl+A, D             # Detach from session
-# Ctrl+A, K             # Kill current session
+  safety:
+    min_free_space_gb: 200 # More conservative space buffer
+    backup_before_removal: false # Optional backup (default: off, originals are safe)
+    # backup_before_removal: true # Enable for extra paranoia
 ```
 
 ---
 
-## What This Step Accomplishes
+## 🚨 Troubleshooting
 
-1. **System Verification** - Confirms your optimized partition layout is working
-2. **Tool Installation** - Installs all necessary deduplication and media processing tools
-3. **Directory Structure** - Creates organized workspace for the entire process
-4. **Discovery Script** - Professional-grade script that:
-   - Uses parallel processing for speed
-   - Shows progress bars for large operations
-   - Creates SHA256 manifests for duplicate detection
-   - Generates detailed statistics
-   - Logs everything with timestamps
-5. **Safe Execution** - Runs in screen to prevent interruption
+### **Common Issues**
 
-## Next Steps Preview
+**"Not enough space for copy"**
+- Free up space on `/data` partition
+- Copy drives one at a time if needed
+- Adjust `min_free_space_gb` in configuration
 
-- **Phase 2**: Duplicate Analysis & Visual Verification
-- **Phase 3**: Safe Duplicate Removal (after manual verification)
-- **Phase 4**: Content Verification & Sorting
-- **Phase 5**: Final Organization & Validation
+**"No files copied"**
+- Check source drive mount points: `df -h`
+- Verify permissions: `ls -la /media/`
+- Check configuration: `./scripts/common/config.sh`
 
-**Time Estimate for Step 1**: 30 minutes setup + 2-6 hours for discovery (depending on file count)
+**"Nextcloud won't start"**
+- Ensure Docker is running: `systemctl status docker`
+- Check port 8080 is available: `netstat -ln | grep 8080`
+- Review Docker logs: `docker-compose logs nextcloud`
+
+**"High duplicate percentage warning"**
+- Expected when same photos exist on multiple drives
+- Review if backup folders contain duplicates
+- Adjust `max_duplicate_percentage` threshold if needed
+
+### **Recovery Procedures**
+
+**Start completely over:**
+```bash
+# Remove all copied files and restart
+sudo rm -rf /data/incoming /data/duplicates /data/manifests
+./scripts/media/copy_all_media.sh
+```
+
+**Re-analyze without re-copying:**
+```bash
+# If copies are good but analysis needs redoing
+./scripts/media/analyze_copied_files.sh
+```
+
+**Reset verification interface:**
+```bash
+# Restart Nextcloud
+docker-compose -f /data/../apps/nextcloud/docker-compose.yml down
+./scripts/setup/setup_nextcloud_verification.sh
+```
+
+---
+
+## 🎯 Expected Results
+
+### **Typical Outcomes**
+- **Space savings**: 30-60% reduction through deduplication
+- **Processing time**: 2-8 hours depending on photo count
+- **Quality improvement**: Only best versions of each photo kept
+- **Organization**: Clean, structured photo collection
+
+### **Success Indicators**
+- ✅ Final collection in `/data/final/` contains all unique photos
+- ✅ RAW files preferred over JPEG versions
+- ✅ Organized folders maintained
+- ✅ Significant storage space saved
+- ✅ Original drives safely formatted for reuse
+- ✅ Ready for photo management software deployment
+
+---
+
+## 🔗 Integration with Homelab Journey
+
+### **Connection to Phase 7 - Storage Setup**
+After photo consolidation completion:
+1. **✅ Photos safely consolidated** in `/data/final/`
+2. **✅ Old drives formatted** and ready for additional storage roles  
+3. **✅ Space optimized** through intelligent deduplication
+4. **➡️ Ready for Phase 7**: Use clean drives for expanded storage
+5. **➡️ Photo management**: Deploy Immich or PhotoPrism on consolidated collection
+
+### **Next Steps**
+- Set up automated backups of `/data/final/`
+- Deploy photo management software (Immich recommended)
+- Configure additional storage using formatted drives
+- Set up development environment for personal projects
+
+---
+
+**The safe copy-first approach ensures your family photos are never at risk while achieving professional-grade consolidation results. Your original drives remain untouched throughout the entire process, giving you complete confidence in the outcome.**

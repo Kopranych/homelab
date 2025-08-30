@@ -1,76 +1,176 @@
 # Home Lab Mini PC Server
 
-A simple guide to set up a mini PC home server for family photos, development projects, and personal services with secure internet access.
+A simple, safe setup guide for a mini PC home server focused on family photo consolidation and development projects with secure internet access.
 
 ## 🎯 Goal
 Set up a mini PC at home that you can access from anywhere on the internet to:
-- Store and manage family photos
-- Run your Java/Python projects
-- Deploy Telegram bots
-- Host web services
+- **Safely consolidate family photos** from old Windows drives
+- Run Java/Python development projects
+- Deploy personal services and applications
+- Host web services with secure remote access
 
-## 📋 Top Level Steps
+## 📋 Complete Setup Process
 
-### 1. Hardware Setup
-- Get a mini PC (8GB+ RAM, 256GB+ storage)
-- Connect to your home network via Ethernet
-- Set up in a well-ventilated location
+### Phase 1-5: Basic System Setup
+Follow the foundational setup guides:
+- [Hardware Setup](docs/01-hardware-setup.md) - Mini PC requirements and setup
+- [OS Installation](docs/02-os-installation.md) - Ubuntu Server 22.04 LTS installation  
+- [Basic Config + Tailscale](docs/03-basic-config-tailscale.md) - System security and remote access
 
-### 2. Install Operating System
-- Install Ubuntu Server 22.04 LTS
-- Create user account with sudo privileges
-- Enable SSH access
-- Use automatic DHCP networking (no static IP needed)
+### **Phase 6: Photo Consolidation** 📸
+**The main focus**: Safely consolidate photos from old Windows drives using the **copy-first** approach.
 
-### 3. Basic System Configuration + Tailscale
-- Update system packages
-- **Install Tailscale VPN** for secure remote access
-- Configure basic security (firewall, SSH keys)
-- Test remote SSH access via Tailscale
-- **Remove keyboard/monitor** (headless operation)
+This is the **core feature** of this homelab setup - a comprehensive, safe solution for consolidating family photos from multiple old Windows drives.
 
-### 4. Docker Setup
-- Install Docker and Docker Compose
-- Set up basic container management
+#### **🔒 Safe Copy-First Approach**
+Unlike risky approaches that work directly on original drives, this workflow:
+1. **📁 Copies ALL photos/videos** from old drives to `/data/incoming/` (originals never touched)
+2. **🔍 Analyzes duplicates** using intelligent quality scoring (RAW > JPEG > compressed)
+3. **👁️ Human verification** via Nextcloud web interface for visual confirmation
+4. **✨ Removes duplicates** keeping only the best quality versions
+5. **🧹 Formats old drives** ready for Phase 7 storage expansion
 
-### 5. Photo Storage Setup
-- Consolidate photos from old drives
-- Organize and deduplicate photos
-- Configure additional storage drives
+#### **⚡ Quick Start**
+```bash
+# Option 1: Manual execution (recommended for learning)
+./scripts/media/copy_all_media.sh                    # Copy everything safely
+./scripts/media/analyze_copied_files.sh              # Find and rank duplicates  
+./scripts/setup/setup_nextcloud_verification.sh     # Web interface for review
+./scripts/media/consolidate_copied_files.sh          # Remove duplicates
 
-### 6. Deploy Core Services
-- Reverse proxy (Traefik or Nginx)
-- SSL certificates for HTTPS
-- Basic monitoring
+# Option 2: Complete automation via Ansible (recommended for long processes)
+screen -S photo-consolidation
+ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolidation.yml
+```
 
-### 7. Add Your Applications
-- Photo management system
-- Development environment
-- Your first services
+#### **📖 Complete Guide**
+**👉 [06-photo-consolidation.md](docs/06-photo-consolidation.md)**
 
-## 🚀 Next Steps
+The comprehensive guide covers:
+- **Prerequisites and space planning** 
+- **Step-by-step workflow** with detailed explanations
+- **Configuration customization** for your specific needs
+- **Troubleshooting** common issues
+- **Expected results** and success indicators
+- **Integration** with the rest of your homelab journey
 
-Each of these top-level steps will have its own detailed guide:
-- `01-hardware-setup.md`
-- `02-os-installation.md` *(simplified networking)*
-- `03-basic-config-tailscale.md` *(combines system config + Tailscale)*
-- `04-docker-setup.md`
-- `05-photo-storage.md`
-- `06-core-services.md`
-- `07-applications.md`
+### Phase 7: Storage Setup
+After photo consolidation, the formatted old drives are ready for additional storage configuration.
 
-## 🔗 Quick Links
-- [Hardware Requirements](docs/01-hardware-setup.md)
-- [OS Installation Guide](docs/02-os-installation.md)
-- [Basic Config + Tailscale Setup](docs/03-basic-config-tailscale.md)
+## 🛡️ Safety-First Approach
 
-## ⚡ Quick Start
-1. **Prep**: Create free Tailscale account at [tailscale.com](https://tailscale.com) (5 minutes)
-2. **Install**: Ubuntu Server with automatic networking + SSH enabled
-3. **Configure**: System updates + Tailscale setup (5 minutes)
-4. **Test**: SSH access from internet via Tailscale
-5. **Go headless**: Disconnect monitor/keyboard, manage remotely
+### **Why This Approach is Safe**
+- **🔒 Original drives never modified** - All work done on copies
+- **📋 Intelligent duplicate detection** - Quality-based ranking (RAW > JPEG)
+- **👁️ Human verification** - Web interface for visual confirmation
+- **🔄 Fully reversible** - Can restart any phase safely
+- **⚙️ Configuration-driven** - All settings in centralized config files
+
+### **Configuration Management**
+All settings controlled by:
+- **`config.yml`** - Main configuration
+- **`config.local.yml`** - Your personal customization
+- **`environments/`** - Development vs production settings
+
+See: [Configuration Guide](CONFIG.md)
+
+## 📁 Repository Structure
+
+```
+homelab/
+├── README.md                           # This file
+├── config.yml                         # Main configuration
+├── config.local.yml.example           # Template for personal settings
+├── CONFIG.md                          # Configuration guide
+├── CLAUDE.md                          # AI assistant guidance
+├── docs/
+│   ├── 01-hardware-setup.md           # Hardware requirements
+│   ├── 02-os-installation.md          # OS installation guide
+│   ├── 03-basic-config-tailscale.md   # Basic system setup
+│   ├── 06-photo-consolidation.md      # Photo consolidation workflow
+│   └── 07-storage-setup.md            # Additional storage setup
+├── scripts/
+│   ├── common/
+│   │   └── config.sh                  # Configuration library
+│   ├── media/
+│   │   ├── copy_all_media.sh          # Safe copy from old drives
+│   │   ├── analyze_copied_files.sh    # Duplicate analysis
+│   │   └── consolidate_copied_files.sh # Final consolidation
+│   └── setup/
+│       └── setup_nextcloud_verification.sh # Web verification interface
+├── infra/ansible/
+│   ├── photo-consolidation.yml        # Complete automation
+│   ├── inventory/homelab              # Server configuration
+│   └── group_vars/all.yml            # Ansible variables
+└── environments/
+    ├── development/config.yml         # Dev environment settings
+    └── production/config.yml          # Production settings
+```
+
+## 🚀 Quick Start
+
+### 1. **Initial Setup**
+```bash
+# Copy and customize your configuration
+cp config.local.yml.example config.local.yml
+nano config.local.yml  # Add your server details, drive paths, etc.
+```
+
+### 2. **Photo Consolidation**
+```bash
+# Start with the safe copy operation
+./scripts/media/copy_all_media.sh
+# Follow the prompts for each phase
+```
+
+### 3. **Web Verification**
+- Browse to `http://your-server:8080` after Nextcloud setup
+- Review photos and duplicate analysis
+- Confirm consolidation decisions
+
+## ⚡ Key Features
+
+### **Intelligent Photo Consolidation**
+- **Quality-based ranking**: RAW files > high-resolution JPEG > compressed versions
+- **Folder context awareness**: Organized folders preferred over backup locations
+- **Configurable scoring**: Customize quality factors for your needs
+- **Space optimization**: Significant storage savings through smart deduplication
+
+### **Maximum Safety**
+- **Copy-first approach**: Never modifies original drives
+- **Human verification**: Visual confirmation before any destructive operations
+- **Detailed logging**: Complete audit trail of all operations
+- **Rollback capability**: Can restart from any phase
+
+### **Easy Management**
+- **Web interface**: Nextcloud for browsing and verification
+- **Configuration-driven**: All settings in YAML files
+- **Environment-aware**: Different settings for dev/test/production
+- **Both scripted and automated**: Choose manual control or full automation
+
+## 🔗 Next Steps
+
+1. **Complete photo consolidation** using the safe workflow
+2. **Set up photo management** (Immich, PhotoPrism) on consolidated collection
+3. **Configure additional storage** using formatted old drives
+4. **Deploy development environment** for Java/Python projects
+5. **Add personal services** and applications
+
+## 📚 Documentation
+
+### **Setup Phase Guides**  
+- **[01-hardware-setup.md](docs/01-hardware-setup.md)** - Mini PC requirements and setup
+- **[02-os-installation.md](docs/02-os-installation.md)** - Ubuntu Server installation
+- **[03-basic-config-tailscale.md](docs/03-basic-config-tailscale.md)** - System security and remote access
+- **[06-photo-consolidation.md](docs/06-photo-consolidation.md)** - 📸 Safe photo consolidation workflow
+- **[07-storage-setup.md](docs/07-storage-setup.md)** - Additional storage configuration
+
+### **Configuration & Management**
+- **[Configuration Management](CONFIG.md)** - ⚙️ Understanding the centralized config system
+
+### **Technical Reference**
+- **[CLAUDE.md](CLAUDE.md)** - AI assistant guidance for development and maintenance
 
 ---
 
-Start with steps 1-3 to get a fully accessible server from anywhere on the internet.
+**Focus**: This homelab setup prioritizes **safe photo consolidation** as the primary use case, with a proven copy-first approach that ensures your family photos are never at risk during the consolidation process.

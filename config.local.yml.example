@@ -1,0 +1,62 @@
+# Local Configuration Override Example
+# Copy this file to config.local.yml and customize for your specific setup
+# This file should NOT be committed to version control
+
+---
+# Override infrastructure settings for your specific hardware
+infrastructure:
+  server:
+    hostname: "my-homelab-server"
+    network:
+      local_ip: "192.168.1.150"        # Your actual local IP
+      tailscale_ip: "100.64.1.100"     # Your actual Tailscale IP
+      domain: "mylab.local"
+    hardware:
+      cpu_cores: 4                     # Your actual CPU cores
+      memory_gb: 8                     # Your actual RAM
+    users:
+      primary_user: "myuser"           # Your actual username
+      ansible_user: "myuser"
+
+  storage:
+    # Your actual source drives
+    source_drives:
+      - path: "/media/old-ssd"
+        label: "windows-photos-ssd"
+        size: "500GB"
+        filesystem: "ntfs"
+      - path: "/media/external-hdd"
+        label: "family-photos-backup"
+        size: "2TB" 
+        filesystem: "ntfs"
+
+# Override photo consolidation settings
+photo_consolidation:
+  process:
+    parallel_jobs: 6                   # Adjust for your CPU
+    dry_run: true                      # Start with dry run!
+    
+  safety:
+    min_free_space_gb: 150             # Adjust for your storage
+
+# Override service configurations
+services:
+  core:
+    monitoring:
+      prometheus:
+        enabled: false                 # Disable if not needed initially
+      grafana:
+        enabled: false
+        
+# Override network settings
+network:
+  tailscale:
+    tailnet: "your-actual-tailnet.ts.net"
+    
+# Override credentials (use Ansible Vault for production)
+secrets:
+  grafana_admin_password: "change-me-please"
+  
+# Local development overrides
+development:
+  test_data_location: "/tmp/test-photos"

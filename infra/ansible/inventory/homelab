@@ -1,0 +1,11 @@
+[homelab]
+# Replace with your actual mini PC details
+homelab-server ansible_host=192.168.1.100 ansible_user=username
+
+# If using Tailscale (recommended):
+# homelab-server ansible_host=100.x.x.x ansible_user=username
+
+[homelab:vars]
+# Common variables for all homelab hosts
+ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'

@@ -1,0 +1,66 @@
+---
+# Development Environment Configuration Overrides
+# These settings override the main config.yml for development
+
+# Development-specific photo consolidation settings
+photo_consolidation:
+  process:
+    dry_run: true              # Always dry run in development
+    parallel_jobs: 2           # Fewer parallel jobs
+    preserve_structure: true
+    
+  safety:
+    max_duplicate_percentage: 90  # More lenient in dev
+    min_free_space_gb: 50        # Less strict space requirements
+    
+  # Use smaller test data sets
+  extensions:
+    photos: 
+      - jpg
+      - png
+      - heic
+    videos:
+      - mp4
+      - mov
+
+# Development services
+services:
+  core:
+    monitoring:
+      prometheus:
+        enabled: false  # Disable monitoring in dev
+      grafana:
+        enabled: false
+        
+  photo_management:
+    immich:
+      enabled: false    # Disable heavy services in dev
+      
+  development:
+    services:
+      postgresql:
+        enabled: true
+        databases:
+          - "homelab_dev"
+          - "test_db"
+
+# Development logging
+logging:
+  default_level: "DEBUG"
+  components:
+    ansible: "DEBUG"
+    photo_consolidation: "DEBUG"
+    
+# Development infrastructure
+infrastructure:
+  storage:
+    # Use smaller test directories in development
+    source_drives:
+      - path: "/tmp/test-photos-1"
+        label: "test-source-1"
+        size: "1GB"
+        filesystem: "ext4"
+      - path: "/tmp/test-photos-2"
+        label: "test-source-2"  
+        size: "1GB"
+        filesystem: "ext4"
