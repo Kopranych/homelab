@@ -91,18 +91,16 @@ version: '3.8'
 
 services:
   nextcloud-db:
-    image: mariadb:10.11 //TODD: use postgresql
+    image: postgres:15
     container_name: nextcloud-db
     restart: unless-stopped
-    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
     volumes:
-      - /data/docker/nextcloud/db:/var/lib/mysql
+      - /data/docker/nextcloud/db:/var/lib/postgresql/data
     environment:
-      - MYSQL_ROOT_PASSWORD=nextcloud_root_pass_2024
-      - MYSQL_PASSWORD=nextcloud_user_pass_2024
-      - MYSQL_DATABASE=nextcloud
-      - MYSQL_USER=nextcloud
-      - MYSQL_INITDB_SKIP_TZINFO=1
+      - POSTGRES_DB=nextcloud
+      - POSTGRES_USER=nextcloud
+      - POSTGRES_PASSWORD=nextcloud_db_pass_2024
+      - PGDATA=/var/lib/postgresql/data/pgdata
     networks:
       - nextcloud-network
 
@@ -135,10 +133,10 @@ services:
       - /data/final:/var/www/html/data/verification/final:ro
       - /data/logs:/var/www/html/data/verification/logs:ro
     environment:
-      - MYSQL_PASSWORD=nextcloud_user_pass_2024
-      - MYSQL_DATABASE=nextcloud
-      - MYSQL_USER=nextcloud
-      - MYSQL_HOST=nextcloud-db
+      - POSTGRES_DB=nextcloud
+      - POSTGRES_USER=nextcloud
+      - POSTGRES_PASSWORD=nextcloud_db_pass_2024
+      - POSTGRES_HOST=nextcloud-db
       - REDIS_HOST=nextcloud-redis
       - REDIS_HOST_PASSWORD=redis_pass_2024
       - NEXTCLOUD_ADMIN_PASSWORD=admin_pass_2024

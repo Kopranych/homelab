@@ -55,19 +55,35 @@ du -sh /media/sdb1 /media/sdc1
 
 ---
 
-## 🚀 Phase 1: Safe Copy Operation //TODD: use first ansible approach or rewrite these like options
+## 🚀 Phase 1: Safe Copy Operation
 
 **Goal**: Copy ALL media files from old drives to `/data/incoming/` without touching originals.
 
-### **Execution**
+### **Execution Options**
+
+**Option 1: Ansible Automation (Recommended)**
 ```bash
-# Recommended: Use screen for long-running operations
+# From your laptop, run complete workflow
+screen -S photo-consolidation
+ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolidation.yml
+
+# Detach from screen: Ctrl+A, then D
+# Reattach later: screen -r photo-consolidation
+```
+
+**Option 2: Manual Script Execution**
+```bash
+# On mini PC, run individual phases
 screen -S photo-copy
 ./scripts/media/copy_all_media.sh
 
 # Detach from screen: Ctrl+A, then D
 # Reattach later: screen -r photo-copy
 ```
+
+**Choose Based On:**
+- **Ansible**: Full automation, better error handling, centralized logging
+- **Manual**: Step-by-step control, easier troubleshooting, learning the process
 
 **Why use screen/tmux?**
 - Photo copying can take several hours

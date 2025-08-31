@@ -165,7 +165,7 @@ nano config.local.yml  # Add your server details, drive paths, etc.
 - **[03-basic-config-tailscale.md](docs/03-basic-config-tailscale.md)** - System security and remote access
 - **[04-nextcloud-setup.md](docs/04-nextcloud-setup.md)** - Photo verification web interface
 - **[05-photo-consolidation.md](docs/05-photo-consolidation.md)** - 📸 Safe photo consolidation workflow
-- **[06-storage-setup.md](docs/07-storage-setup.md)** - Additional storage configuration
+- **[06-storage-setup.md](docs/06-storage-setup.md)** - Additional storage configuration
 
 ### **Configuration & Management**
 - **[Configuration Management](CONFIG.md)** - ⚙️ Understanding the centralized config system
