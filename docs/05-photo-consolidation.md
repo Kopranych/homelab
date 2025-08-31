@@ -1,4 +1,4 @@
-# Safe Photo Consolidation - Complete Guide
+# Phase 5: Photo Consolidation - Complete Guide
 
 **The safest approach to consolidate family photos: Copy everything first, process only the copies, never touch original drives.**
 
@@ -37,7 +37,9 @@ This guide walks you through safely consolidating photos and videos from multipl
 - Mini PC with Ubuntu Server 22.04 LTS
 - `/data` partition with sufficient space (see space calculation below)
 - Old Windows drives mounted (e.g., `/media/sdb1`, `/media/sdc1`)
-- Basic system setup completed (Phases 1-5)
+- Basic system setup completed (Phases 1-3) ✅
+- Nextcloud verification interface installed (Phase 4) ✅
+- Ansible configured on laptop for remote execution ✅
 
 ### **Space Requirements Calculation**
 ```bash
@@ -53,7 +55,7 @@ du -sh /media/sdb1 /media/sdc1
 
 ---
 
-## 🚀 Phase 1: Safe Copy Operation
+## 🚀 Phase 1: Safe Copy Operation //TODD: use first ansible approach or rewrite these like options
 
 **Goal**: Copy ALL media files from old drives to `/data/incoming/` without touching originals.
 
@@ -173,18 +175,19 @@ Space savings: 11.3MB
 
 ### **Execution**
 ```bash
-./scripts/setup/setup_nextcloud_verification.sh
+# Nextcloud is already installed from Phase 4
+# Access the web interface to review photos and analysis
 ```
 
-### **What Happens**
-1. **Deploys Nextcloud** via Docker on port 8080
-2. **Mounts verification folders** for web browsing
-3. **Creates verification guide** with detailed instructions
-4. **Generates access credentials** automatically
+### **What's Available**
+1. **Nextcloud already deployed** via Docker on port 8080 (from Phase 4)
+2. **Verification folders mounted** for web browsing
+3. **Analysis results available** for review
+4. **Admin credentials** from Phase 4 setup
 
 ### **Web Access**
 - **URL**: `http://your-server:8080`
-- **Login**: Auto-generated admin credentials (displayed after setup)
+- **Login**: Admin credentials from Phase 4 setup
 - **Navigation**: Files → verification
 
 ### **Verification Interface Structure**
@@ -261,7 +264,7 @@ screen -r photo-copy  # or screen -S photo-consolidate
 
 ## 🧹 Phase 5: Original Drive Cleanup
 
-**Goal**: Format original drives for reuse in Phase 7 Storage Setup.
+**Goal**: Format original drives for reuse in Phase 6 Storage Setup.
 
 ### **Manual Drive Formatting**
 ```bash
@@ -384,12 +387,12 @@ docker-compose -f /data/../apps/nextcloud/docker-compose.yml down
 
 ## 🔗 Integration with Homelab Journey
 
-### **Connection to Phase 7 - Storage Setup**
+### **Connection to Phase 6 - Storage Setup**
 After photo consolidation completion:
 1. **✅ Photos safely consolidated** in `/data/final/`
 2. **✅ Old drives formatted** and ready for additional storage roles  
 3. **✅ Space optimized** through intelligent deduplication
-4. **➡️ Ready for Phase 7**: Use clean drives for expanded storage
+4. **➡️ Ready for Phase 6**: Use clean drives for expanded storage
 5. **➡️ Photo management**: Deploy Immich or PhotoPrism on consolidated collection
 
 ### **Next Steps**

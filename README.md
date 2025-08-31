@@ -11,13 +11,14 @@ Set up a mini PC at home that you can access from anywhere on the internet to:
 
 ## 📋 Complete Setup Process
 
-### Phase 1-5: Basic System Setup
+### Phase 1-4: Basic System Setup
 Follow the foundational setup guides:
 - [Hardware Setup](docs/01-hardware-setup.md) - Mini PC requirements and setup
 - [OS Installation](docs/02-os-installation.md) - Ubuntu Server 22.04 LTS installation  
 - [Basic Config + Tailscale](docs/03-basic-config-tailscale.md) - System security and remote access
+- [Nextcloud Setup](docs/04-nextcloud-setup.md) - Photo verification web interface
 
-### **Phase 6: Photo Consolidation** 📸
+### **Phase 5: Photo Consolidation** 📸
 **The main focus**: Safely consolidate photos from old Windows drives using the **copy-first** approach.
 
 This is the **core feature** of this homelab setup - a comprehensive, safe solution for consolidating family photos from multiple old Windows drives.
@@ -28,14 +29,14 @@ Unlike risky approaches that work directly on original drives, this workflow:
 2. **🔍 Analyzes duplicates** using intelligent quality scoring (RAW > JPEG > compressed)
 3. **👁️ Human verification** via Nextcloud web interface for visual confirmation
 4. **✨ Removes duplicates** keeping only the best quality versions
-5. **🧹 Formats old drives** ready for Phase 7 storage expansion
+5. **🧹 Formats old drives** ready for Phase 6 storage expansion
 
 #### **⚡ Quick Start**
 ```bash
 # Option 1: Manual execution (recommended for learning)
 ./scripts/media/copy_all_media.sh                    # Copy everything safely
 ./scripts/media/analyze_copied_files.sh              # Find and rank duplicates  
-./scripts/setup/setup_nextcloud_verification.sh     # Web interface for review
+# Web verification via Nextcloud (already installed in Phase 4)
 ./scripts/media/consolidate_copied_files.sh          # Remove duplicates
 
 # Option 2: Complete automation via Ansible (recommended for long processes)
@@ -44,7 +45,7 @@ ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolid
 ```
 
 #### **📖 Complete Guide**
-**👉 [06-photo-consolidation.md](docs/06-photo-consolidation.md)**
+**👉 [05-photo-consolidation.md](docs/05-photo-consolidation.md)**
 
 The comprehensive guide covers:
 - **Prerequisites and space planning** 
@@ -54,8 +55,8 @@ The comprehensive guide covers:
 - **Expected results** and success indicators
 - **Integration** with the rest of your homelab journey
 
-### Phase 7: Storage Setup
-After photo consolidation, the formatted old drives are ready for additional storage configuration.
+### Phase 6: Storage Setup
+After photo consolidation, the formatted old drives are ready for additional storage configuration and service relocation.
 
 ## 🛡️ Safety-First Approach
 
@@ -162,8 +163,9 @@ nano config.local.yml  # Add your server details, drive paths, etc.
 - **[01-hardware-setup.md](docs/01-hardware-setup.md)** - Mini PC requirements and setup
 - **[02-os-installation.md](docs/02-os-installation.md)** - Ubuntu Server installation
 - **[03-basic-config-tailscale.md](docs/03-basic-config-tailscale.md)** - System security and remote access
-- **[06-photo-consolidation.md](docs/06-photo-consolidation.md)** - 📸 Safe photo consolidation workflow
-- **[07-storage-setup.md](docs/07-storage-setup.md)** - Additional storage configuration
+- **[04-nextcloud-setup.md](docs/04-nextcloud-setup.md)** - Photo verification web interface
+- **[05-photo-consolidation.md](docs/05-photo-consolidation.md)** - 📸 Safe photo consolidation workflow
+- **[06-storage-setup.md](docs/07-storage-setup.md)** - Additional storage configuration
 
 ### **Configuration & Management**
 - **[Configuration Management](CONFIG.md)** - ⚙️ Understanding the centralized config system
