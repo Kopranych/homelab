@@ -33,15 +33,18 @@ Unlike risky approaches that work directly on original drives, this workflow:
 
 #### **⚡ Quick Start**
 ```bash
-# Option 1: Manual execution (recommended for learning)
-./scripts/media/copy_all_media.sh                    # Copy everything safely
-./scripts/media/analyze_copied_files.sh              # Find and rank duplicates  
-# Web verification via Nextcloud (already installed in Phase 4)
-./scripts/media/consolidate_copied_files.sh          # Remove duplicates
+# Option 1: Python CLI (recommended for manual control)
+cd scripts/media && pip3 install -r requirements.txt
+screen -S photo-consolidation
+python3 consolidate.py workflow                      # Complete workflow
+# Or run phases individually: scan, copy, analyze, consolidate
 
-# Option 2: Complete automation via Ansible (recommended for long processes)
+# Option 2: Complete automation via Ansible (recommended for production)
 screen -S photo-consolidation
 ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolidation.yml
+
+# Option 3: Legacy bash scripts (fallback)
+./scripts/media/copy_all_media.sh && ./scripts/media/analyze_copied_files.sh && ./scripts/media/consolidate_copied_files.sh
 ```
 
 #### **📖 Complete Guide**

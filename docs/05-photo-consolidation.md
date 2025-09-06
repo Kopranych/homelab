@@ -39,7 +39,8 @@ This guide walks you through safely consolidating photos and videos from multipl
 - Old Windows drives mounted (e.g., `/media/sdb1`, `/media/sdc1`)
 - Basic system setup completed (Phases 1-3) ✅
 - Nextcloud verification interface installed (Phase 4) ✅
-- Ansible configured on laptop for remote execution ✅
+- Python 3.8+ available on mini PC (Ubuntu 22.04 includes Python 3.10) ✅
+- Ansible configured on laptop for remote execution (optional) ✅
 
 ### **Space Requirements Calculation**
 ```bash
@@ -71,9 +72,29 @@ ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolid
 # Reattach later: screen -r photo-consolidation
 ```
 
-**Option 2: Manual Script Execution**
+**Option 2: Python CLI (Recommended for Manual Control)**
 ```bash
-# On mini PC, run individual phases
+# On mini PC, install Python dependencies first
+cd scripts/media
+pip3 install -r requirements.txt
+
+# Run complete workflow
+screen -S photo-consolidation
+python3 consolidate.py workflow
+
+# Or run individual phases
+python3 consolidate.py scan         # Scan source drives
+python3 consolidate.py copy         # Copy files
+python3 consolidate.py analyze      # Analyze duplicates
+python3 consolidate.py consolidate  # Final consolidation
+
+# Check status anytime
+python3 consolidate.py status
+```
+
+**Option 3: Legacy Bash Scripts**
+```bash
+# On mini PC, run individual phases (legacy)
 screen -S photo-copy
 ./scripts/media/copy_all_media.sh
 
@@ -82,8 +103,9 @@ screen -S photo-copy
 ```
 
 **Choose Based On:**
-- **Ansible**: Full automation, better error handling, centralized logging
-- **Manual**: Step-by-step control, easier troubleshooting, learning the process
+- **Ansible**: Full automation, best for production
+- **Python CLI**: Better control, progress bars, robust error handling
+- **Bash Scripts**: Legacy option, simpler but less reliable
 
 **Why use screen/tmux?**
 - Photo copying can take several hours
