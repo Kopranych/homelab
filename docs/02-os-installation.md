@@ -199,7 +199,32 @@ free -h
 ip addr show
 ```
 
-### 4. Update System
+### 4. Verify Sudo Access
+
+Your user should have sudo access from installation, but verify:
+
+```bash
+# Test sudo access
+sudo whoami
+# Should output: root
+
+# If you get "user is not in the sudoers file", add your user to sudo group:
+# You'll need to login as root or use recovery mode for this
+
+# Login as root (if available) or use recovery mode, then:
+usermod -aG sudo your-username
+
+# Verify user is in sudo group:
+groups your-username
+# Should show: your-username : your-username sudo
+
+# Logout and login again for changes to take effect
+exit
+```
+
+**Note**: During Ubuntu Server installation, the first user created automatically gets sudo privileges. You only need this if sudo doesn't work.
+
+### 5. Update System
 ```bash
 # Update package lists
 sudo apt update
