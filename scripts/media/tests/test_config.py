@@ -16,6 +16,9 @@ def test_should_load_configuration_when_config_file_exists():
     assert config.config_path is not None, "Config path should not be None"
     assert Path(config.config_path).exists(), "Config file should exist"
     print(f"✅ Configuration loaded from: {config.config_path}")
+    print("📋 Full configuration:")
+    import yaml
+    print(yaml.dump(config.config, default_flow_style=False, indent=2))
 
 def test_should_provide_data_root_when_configuration_loaded():
     """Should provide data root directory when configuration is loaded."""
@@ -78,7 +81,8 @@ def test_should_import_all_modules_when_package_loaded():
     modules = [
         'photo_consolidator.config',
         'photo_consolidator.utils', 
-        'photo_consolidator.scanner',
+        'photo_consolidator.file_copier',
+        'photo_consolidator.media_scanner',
         'photo_consolidator.duplicates',
         'photo_consolidator.consolidator',
         'photo_consolidator.reporter'
@@ -155,13 +159,13 @@ def test_should_provide_process_config_when_configuration_loaded():
     
     # Should provide process configuration
     parallel_jobs = config.get_parallel_jobs()
-    assert isinstance(parallel_jobs, int), "Parallel jobs should be an integer" #TODO: how does it work and would it be some problems with race condition or data integrity?
+    assert isinstance(parallel_jobs, int), "Parallel jobs should be an integer"
     assert 1 <= parallel_jobs <= 32, "Parallel jobs should be reasonable (1-32)"
     
     preserve_structure = config.should_preserve_structure()
     assert isinstance(preserve_structure, bool), "Preserve structure should be boolean"
     
     is_dry_run = config.is_dry_run()
-    assert isinstance(is_dry_run, bool), "Dry run should be boolean" #TODO: Is dry run really enabled/disabled real process?
+    assert isinstance(is_dry_run, bool), "Dry run should be boolean"
     
     print(f"✅ Process config: {parallel_jobs} jobs, preserve={preserve_structure}, dry_run={is_dry_run}")

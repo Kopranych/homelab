@@ -237,7 +237,7 @@ def create_manifest_entry(file_path: Path, base_path: Optional[Path] = None) -> 
         }
 
 
-def validate_file_integrity(file_path: Path, expected_hash: str) -> bool: #TODO: is it necessary method?
+def validate_file_integrity(file_path: Path, expected_hash: str) -> bool:
     """
     Validate file integrity against expected hash.
     

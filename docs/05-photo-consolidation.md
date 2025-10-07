@@ -72,7 +72,7 @@ ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolid
 # Reattach later: screen -r photo-consolidation
 ```
 
-**Option 2: Python CLI (Recommended for Manual Control)**
+**Option 2: Python CLI (Recommended for Manual Control)** //TODO: need to copy python script files to mini pc
 ```bash
 # On mini PC, install Python dependencies first
 cd scripts/media

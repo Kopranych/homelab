@@ -99,7 +99,7 @@ sudo parted $DEV_512GB print
 ### Step 3: Create Development Partitions
 ```bash
 # Create Docker partition (200GB)
-sudo parted $DEV_512GB mkpart docker ext4 1MiB 200GiB //TODO: is it necessary particioning development workspace
+sudo parted $DEV_512GB mkpart docker ext4 1MiB 200GiB
 
 # Create Projects partition (200GB) 
 sudo parted $DEV_512GB mkpart projects ext4 200GiB 400GiB

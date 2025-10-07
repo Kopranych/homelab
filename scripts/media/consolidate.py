@@ -18,10 +18,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from photo_consolidator import (
     Config,
-    PhotoScanner, 
+    PhotoScanner,
+    FileCopier,
     DuplicateDetector,
     PhotoConsolidator,
-    ConsolidationReporter
+    ConsolidationReporter,
 )
 
 # Initialize colorama for cross-platform colored output
@@ -119,7 +120,7 @@ def scan(ctx, progress):
     print_header("PHOTO SCANNING PHASE")
     
     config = ctx.obj['config']
-    scanner = PhotoScanner(config)
+    copier = FileCopier(config)
     
     try:
         print_info("Starting scan of source drives...")
@@ -129,7 +130,7 @@ def scan(ctx, progress):
                 percentage = (current / total * 100) if total > 0 else 0
                 click.echo(f"\rProgress: {current:,}/{total:,} ({percentage:.1f}%)", nl=False)
         
-        results = scanner.scan_source_drives(progress_callback if progress else None)
+        results = copier.copy_media_files(progress_callback if progress else None)
         
         if progress:
             click.echo()  # New line after progress
