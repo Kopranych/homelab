@@ -257,12 +257,33 @@ hostname -I
 ```
 
 ### Test Local SSH (Optional)
-```bash
-# From another device on your home network (Windows PC, phone on same WiFi):
-ssh your-username@192.168.1.XXX  # Replace XXX with actual IP
 
-# This works locally but NOT from internet yet
-# Tailscale in Step 3 will enable internet access
+#### Option 1: Using IP Address (Works immediately)
+```powershell
+# From Windows PC on your home network:
+ssh your-username@192.168.1.XXX  # Replace XXX with actual IP
+```
+
+#### Option 2: Using Hostname (Easier to remember)
+```powershell
+# From Windows PC on your home network:
+ssh your-username@homelab-server.local
+
+# Or just the hostname (depends on your router):
+ssh your-username@homelab-server
+```
+
+**Making hostname work on Windows:**
+```powershell
+# If hostname doesn't resolve, add to Windows hosts file:
+# 1. Open PowerShell as Administrator
+# 2. Edit hosts file:
+notepad C:\Windows\System32\drivers\etc\hosts
+
+# 3. Add this line (replace with your actual IP):
+192.168.1.XXX    homelab-server homelab-server.local
+
+# 4. Save and try SSH again with hostname
 ```
 
 **Important**: This SSH only works from devices on your home network. Internet access requires Tailscale (Step 3).
