@@ -47,15 +47,58 @@ echo "✅ Docker installed - logout/login required for group membership"
 ## 🔍 Pre-Installation Verification
 
 ```bash
-# Logout and login, then verify Docker is working
+# Verify Docker is installed
 docker --version
 docker compose version
+
+# Fix Docker permissions (if needed)
+# Check if docker group exists
+getent group docker
+
+# If empty, create docker group and add your user
+sudo groupadd docker
+sudo usermod -aG docker $USER
+
+# Set correct permissions on docker socket
+sudo chown root:docker /var/run/docker.sock
+sudo chmod 660 /var/run/docker.sock
+
+# Restart Docker service
+sudo systemctl restart docker
+
+# Refresh group membership (or logout/login)
+newgrp docker
+
+# Test Docker works without sudo
 docker ps
 
-# Check available space on main system
-df -h /data
+# Check available space on /home partition
+df -h /home
 
-# Ensure adequate space (need ~10GB for Nextcloud)
+# Ensure adequate space (need ~10-20GB for Nextcloud)
+```
+
+**Storage Strategy:**
+- `/home` - Nextcloud app, database, and Redis (temporary, will migrate to new SSD later)
+- `/data/nextcloud/files` - Your new photos/documents uploaded via Nextcloud (permanent, 799GB available)
+- `/data/photo-consolidation` - Old photos verification workflow (read-only, temporary for consolidation process)
+
+---
+
+## 🗑️ Remove Existing Nextcloud (If Installed via Snap)
+
+```bash
+# Check if Nextcloud snap is installed
+snap list | grep nextcloud
+
+# If found, remove it
+sudo snap stop nextcloud
+sudo snap remove nextcloud
+
+# Verify port 80 is now free
+sudo ss -tlnp | grep -E ':(80|443|8080)'
+
+echo "✅ Old Nextcloud removed"
 ```
 
 ---
@@ -63,86 +106,121 @@ df -h /data
 ## 📁 Create Nextcloud Directory Structure
 
 ```bash
-# Create Nextcloud directories on main system
-sudo mkdir -p /data/docker/nextcloud/app
-sudo mkdir -p /data/docker/nextcloud/db
-sudo mkdir -p /data/docker/nextcloud/config
-sudo mkdir -p /data/docker/nextcloud/data
-sudo mkdir -p /data/docker/nextcloud/logs
+# Create Nextcloud directories in /home partition (temporary location)
+sudo mkdir -p /home/docker/nextcloud/app
+sudo mkdir -p /home/docker/nextcloud/db
+sudo mkdir -p /home/docker/nextcloud/config
+sudo mkdir -p /home/docker/nextcloud/data
+sudo mkdir -p /home/docker/nextcloud/redis
+sudo mkdir -p /home/docker/nextcloud/logs
 
-# Set proper ownership
-sudo chown -R $USER:$USER /data/docker/nextcloud
+# Create Nextcloud user files directory in /data (permanent storage for new photos/files)
+sudo mkdir -p /data/nextcloud/files
+
+# Create photo consolidation verification directories in /data (read-only mounts)
+sudo mkdir -p /data/photo-consolidation/incoming
+sudo mkdir -p /data/photo-consolidation/duplicates
+sudo mkdir -p /data/photo-consolidation/final
+sudo mkdir -p /data/photo-consolidation/logs
+
+# Set proper ownership - Nextcloud container runs as www-data (UID 33)
+sudo chown -R 33:33 /home/docker/nextcloud/app
+sudo chown -R 33:33 /home/docker/nextcloud/config
+sudo chown -R 33:33 /home/docker/nextcloud/data
+sudo chown -R 33:33 /data/nextcloud/files
+sudo chown -R 33:33 /data/photo-consolidation
 
 # Create docker-compose directory
 mkdir -p ~/docker-compose/nextcloud
 cd ~/docker-compose/nextcloud
 
 echo "✅ Nextcloud directories created"
+echo "ℹ️  App/DB in /home (temporary, will migrate to new SSD later)"
+echo "ℹ️  User files in /data/nextcloud/files (permanent storage for new photos)"
+echo "ℹ️  Photo consolidation in /data/photo-consolidation (verification only)"
 ```
 
 ---
 
 ## 🐳 Create Docker Compose Configuration
 
+**Architecture Decision:**
+- **Nextcloud**: Dedicated PostgreSQL + Redis (isolated, production-like)
+- **Lab apps** (Python/Java): Separate shared PostgreSQL + Redis stack (to be created later)
+- **Benefits**: Independent upgrades, easier backups, no conflicts between services
+
 ```bash
 # Create docker-compose.yml for Nextcloud
 cat > docker-compose.yml << 'EOF'
-version: '3.8'
-
 services:
-  nextcloud-db:
-    image: postgres:15
-    container_name: nextcloud-db
+  postgres-nextcloud:
+    image: postgres:15-alpine
+    container_name: postgres-nextcloud
     restart: unless-stopped
     volumes:
-      - /data/docker/nextcloud/db:/var/lib/postgresql/data
+      - /home/docker/nextcloud/db:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=nextcloud
       - POSTGRES_USER=nextcloud
       - POSTGRES_PASSWORD=nextcloud_db_pass_2024
       - PGDATA=/var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - nextcloud-network
 
-  nextcloud-redis:
+  redis-nextcloud:
     image: redis:7-alpine
-    container_name: nextcloud-redis
+    container_name: redis-nextcloud
     restart: unless-stopped
     command: redis-server --requirepass redis_pass_2024
     volumes:
-      - /data/docker/nextcloud/redis:/data
+      - /home/docker/nextcloud/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks:
       - nextcloud-network
 
   nextcloud-app:
-    image: nextcloud:28
+    image: nextcloud:28-apache
     container_name: nextcloud-app
     restart: unless-stopped
     ports:
       - "8080:80"
     depends_on:
-      - nextcloud-db
-      - nextcloud-redis
+      postgres-nextcloud:
+        condition: service_healthy
+      redis-nextcloud:
+        condition: service_healthy
     volumes:
-      - /data/docker/nextcloud/app:/var/www/html
-      - /data/docker/nextcloud/config:/var/www/html/config
-      - /data/docker/nextcloud/data:/var/www/html/data
-      # Photo verification mounts (read-only for safety)
-      - /data/incoming:/var/www/html/data/verification/incoming:ro
-      - /data/duplicates:/var/www/html/data/verification/duplicates:ro
-      - /data/final:/var/www/html/data/verification/final:ro
-      - /data/logs:/var/www/html/data/verification/logs:ro
+      # Nextcloud app files in /home (temporary, will migrate to new SSD)
+      - /home/docker/nextcloud/app:/var/www/html
+      - /home/docker/nextcloud/config:/var/www/html/config
+      - /home/docker/nextcloud/data:/var/www/html/data
+      # User files - permanent storage in /data for new photos/documents
+      - /data/nextcloud/files:/var/www/html/data/admin/files
+      # Photo consolidation verification mounts (read-only, temporary for verification)
+      - /data/photo-consolidation/incoming:/var/www/html/data/admin/files/photo-consolidation/incoming:ro
+      - /data/photo-consolidation/duplicates:/var/www/html/data/admin/files/photo-consolidation/duplicates:ro
+      - /data/photo-consolidation/final:/var/www/html/data/admin/files/photo-consolidation/final:ro
+      - /data/photo-consolidation/logs:/var/www/html/data/admin/files/photo-consolidation/logs:ro
     environment:
       - POSTGRES_DB=nextcloud
       - POSTGRES_USER=nextcloud
       - POSTGRES_PASSWORD=nextcloud_db_pass_2024
-      - POSTGRES_HOST=nextcloud-db
-      - REDIS_HOST=nextcloud-redis
+      - POSTGRES_HOST=postgres-nextcloud
+      - REDIS_HOST=redis-nextcloud
       - REDIS_HOST_PASSWORD=redis_pass_2024
       - NEXTCLOUD_ADMIN_PASSWORD=admin_pass_2024
       - NEXTCLOUD_ADMIN_USER=admin
-      - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.1.100 homelab-server
-      - OVERWRITEHOST=192.168.1.100:8080
+      - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.8.107 homelab
+      - OVERWRITEHOST=192.168.8.107:8080
       - OVERWRITEPROTOCOL=http
     networks:
       - nextcloud-network
@@ -154,6 +232,10 @@ networks:
 EOF
 
 echo "✅ Docker Compose configuration created"
+echo "ℹ️  Using /home for Nextcloud files (will migrate to new SSD later)"
+echo "ℹ️  Photo verification mounts point to /data (permanent storage)"
+echo "ℹ️  Dedicated postgres-nextcloud and redis-nextcloud containers"
+echo "ℹ️  Lab apps will use separate shared PostgreSQL/Redis stack"
 ```
 
 ---
@@ -190,21 +272,15 @@ sleep 120
 # Check if Nextcloud is responding
 curl -I http://localhost:8080
 
-# Create verification folder structure inside Nextcloud
-docker compose exec nextcloud-app su -s /bin/bash www-data -c "
-mkdir -p /var/www/html/data/admin/files/verification
-mkdir -p /var/www/html/data/admin/files/verification/incoming
-mkdir -p /var/www/html/data/admin/files/verification/duplicates
-mkdir -p /var/www/html/data/admin/files/verification/final
-mkdir -p /var/www/html/data/admin/files/verification/logs
-"
+# Wait for installation to complete (check logs if needed)
+docker compose logs nextcloud-app | grep "successfully installed"
 
-# Set proper permissions
-docker compose exec nextcloud-app chown -R www-data:www-data /var/www/html/data
-
-# Run occ commands for optimization
+# Run occ commands for database optimization
 docker compose exec -u www-data nextcloud-app php occ db:add-missing-indices
 docker compose exec -u www-data nextcloud-app php occ db:convert-filecache-bigint
+
+# Scan files to register mounted directories
+docker compose exec -u www-data nextcloud-app php occ files:scan --all
 
 echo "✅ Nextcloud post-installation configuration completed"
 ```
@@ -295,6 +371,43 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:8080
 
 ---
 
+## 📱 Connect Nextcloud Mobile App
+
+### iPhone/iPad Setup
+1. **Install Nextcloud app** from the App Store
+2. **For home network access:**
+   - Open Nextcloud app
+   - Tap "Log in"
+   - Server URL: `http://192.168.8.107:8080`
+   - Username: `admin`
+   - Password: `admin_pass_2024`
+   - Grant permissions when prompted
+
+3. **For remote access (away from home):**
+   - Install Tailscale app from App Store
+   - Log in to your Tailscale account
+   - Turn on Tailscale VPN
+   - In Nextcloud app, use server URL from: `tailscale ip -4` (run on server)
+   - Format: `http://100.64.x.x:8080`
+
+### Android Setup
+1. **Install Nextcloud app** from Google Play Store
+2. Follow same steps as iPhone above
+3. **For remote access:** Install Tailscale from Google Play
+
+### Auto-Upload Photos (Optional)
+```bash
+# In Nextcloud mobile app:
+# 1. Go to Settings → Auto upload
+# 2. Enable "Instant upload"
+# 3. Choose folder: /Photos or create new folder
+# 4. Enable "Upload via WiFi only" to save mobile data
+```
+
+**Tip:** Get your Tailscale IP on server: `tailscale ip -4`
+
+---
+
 ## 🔒 Security Configuration
 
 ```bash
@@ -342,7 +455,7 @@ cd ~/docker-compose/nextcloud && docker compose ps
 
 echo ""
 echo "💾 Storage Usage:"
-df -h /data/docker/nextcloud
+df -h /home/docker/nextcloud
 
 echo ""
 echo "🌐 Web Access Test:"
@@ -419,7 +532,7 @@ echo "=== NEXTCLOUD INSTALLATION SUMMARY ==="
 echo ""
 echo "✅ Nextcloud Services:"
 echo "   - Web Interface: http://$(hostname -I | awk '{print $1}'):8080"
-echo "   - Database: MariaDB 10.11"
+echo "   - Database: PostgreSQL 15"
 echo "   - Cache: Redis 7"
 echo "   - Admin User: admin"
 echo ""
@@ -428,16 +541,19 @@ docker compose ps
 
 echo ""
 echo "✅ Storage Locations:"
-echo "   - App Data: /data/docker/nextcloud/app"
-echo "   - Database: /data/docker/nextcloud/db"
-echo "   - User Data: /data/docker/nextcloud/data"
-echo "   - Configuration: /data/docker/nextcloud/config"
+echo "   - App Data: /home/docker/nextcloud/app (temporary, will migrate to new SSD)"
+echo "   - Database: /home/docker/nextcloud/db (temporary, will migrate to new SSD)"
+echo "   - User Data: /home/docker/nextcloud/data (temporary, will migrate to new SSD)"
+echo "   - Configuration: /home/docker/nextcloud/config (temporary, will migrate to new SSD)"
 echo ""
-echo "✅ Verification Mounts (read-only):"
-echo "   - Photos: /data/incoming → verification/incoming"
-echo "   - Analysis: /data/duplicates → verification/duplicates"  
-echo "   - Results: /data/final → verification/final"
-echo "   - Logs: /data/logs → verification/logs"
+echo "✅ User Files (read-write, permanent in /data):"
+echo "   - Nextcloud Files: /data/nextcloud/files → admin/files"
+echo ""
+echo "✅ Photo Consolidation Mounts (read-only, temporary):"
+echo "   - Incoming: /data/photo-consolidation/incoming"
+echo "   - Duplicates: /data/photo-consolidation/duplicates"
+echo "   - Final: /data/photo-consolidation/final"
+echo "   - Logs: /data/photo-consolidation/logs"
 echo ""
 echo "✅ Management Scripts:"
 echo "   - Status Check: ~/check-nextcloud.sh"
