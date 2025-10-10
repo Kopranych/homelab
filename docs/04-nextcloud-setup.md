@@ -140,10 +140,12 @@ echo "Detected Tailscale hostname: $TAILSCALE_HOSTNAME"
 echo ""
 
 # Create Nextcloud directories in /data partition (permanent storage)
+echo "Creating Nextcloud directory structure..."
 sudo mkdir -p /data/docker/nextcloud/app
+sudo mkdir -p /data/docker/nextcloud/config
+sudo mkdir -p /data/docker/nextcloud/data
 sudo mkdir -p /data/docker/nextcloud/db
 sudo mkdir -p /data/docker/nextcloud/redis
-# Note: config and data will be created by Nextcloud inside /app directory automatically
 
 # Create Nextcloud user files directory in /data (permanent storage for new photos/files)
 sudo mkdir -p /data/nextcloud/files
@@ -154,16 +156,37 @@ sudo mkdir -p /data/photo-consolidation/duplicates
 sudo mkdir -p /data/photo-consolidation/final
 sudo mkdir -p /data/photo-consolidation/logs
 
-# Set proper ownership - Nextcloud container runs as www-data (UID 33)
+echo "✅ Directories created"
+echo ""
+
+# ⚠️ CRITICAL: Set ownership BEFORE starting containers
+# This prevents "Cannot create or write into the data directory" error
+echo "Setting proper ownership (www-data UID 33)..."
+echo "ℹ️  Why: Nextcloud container runs as root for initialization,"
+echo "   but Apache runs as www-data (UID 33) and needs write access"
+echo ""
+
 sudo chown -R 33:33 /data/docker/nextcloud/app
+sudo chown -R 33:33 /data/docker/nextcloud/config
+sudo chown -R 33:33 /data/docker/nextcloud/data
 sudo chown -R 33:33 /data/nextcloud/files
 sudo chown -R 33:33 /data/photo-consolidation
+
+# Set proper permissions
+sudo chmod 755 /data/docker/nextcloud/app
+sudo chmod 755 /data/docker/nextcloud/config
+sudo chmod 770 /data/docker/nextcloud/data
+sudo chmod 755 /data/nextcloud/files
+sudo chmod 755 /data/photo-consolidation
+
+echo "✅ Ownership set correctly BEFORE container start"
+echo ""
 
 # Create docker-compose directory
 mkdir -p ~/docker-compose/nextcloud
 cd ~/docker-compose/nextcloud
 
-echo "✅ Nextcloud directories created"
+echo "✅ Nextcloud setup complete"
 echo "ℹ️  All Nextcloud data in /data partition (permanent storage, 799GB available)"
 echo "ℹ️  User files in /data/nextcloud/files (permanent storage for new photos)"
 echo "ℹ️  Photo consolidation in /data/photo-consolidation (verification only)"
@@ -257,11 +280,20 @@ networks:
 EOF
 
 echo "✅ Docker Compose configuration created"
-echo "ℹ️  All Nextcloud data in /data partition (permanent storage)"
-echo "ℹ️  Tailscale access: http://$TAILSCALE_HOSTNAME (or https:// if you enable it)"
-echo "ℹ️  Local network access: http://$LOCAL_IP"
-echo "ℹ️  Dedicated postgres-nextcloud and redis-nextcloud containers"
-echo "ℹ️  Lab apps will use separate shared PostgreSQL/Redis stack"
+echo ""
+echo "ℹ️  Configuration Notes:"
+echo "   - Container runs as root (needed for PHP/Apache initialization)"
+echo "   - Apache inside runs as www-data (UID 33)"
+echo "   - Mounted volumes owned by www-data on host (set earlier)"
+echo "   - DO NOT add 'user: 33:33' - breaks initialization"
+echo ""
+echo "ℹ️  Access URLs:"
+echo "   Tailscale: http://$TAILSCALE_HOSTNAME (or https:// if enabled)"
+echo "   Local: http://$LOCAL_IP"
+echo ""
+echo "ℹ️  Database Architecture:"
+echo "   - Dedicated postgres-nextcloud and redis-nextcloud"
+echo "   - Lab apps will use separate shared stack"
 ```
 
 ---
@@ -273,21 +305,55 @@ echo "ℹ️  Lab apps will use separate shared PostgreSQL/Redis stack"
 cd ~/docker-compose/nextcloud
 
 # Pull images
+echo "Pulling Docker images..."
 docker compose pull
 
 # Start Nextcloud stack
+echo "Starting Nextcloud services..."
 docker compose up -d
 
 # Check container status
+echo ""
+echo "Container status:"
 docker compose ps
 
-# Watch logs for initial setup (optional)
-echo "Watching initial setup logs (Ctrl+C to exit)..."
-docker compose logs -f nextcloud-app
+# Wait for initialization
+echo ""
+echo "⏳ Waiting 60 seconds for Nextcloud initialization..."
+sleep 60
 
-# Wait for setup to complete (usually 2-3 minutes)
-echo "Waiting for Nextcloud to fully initialize..."
-sleep 120
+# Check for errors
+echo ""
+echo "🔍 Checking for permission errors..."
+if docker compose logs nextcloud-app | grep -q "Permission denied"; then
+    echo "❌ Permission errors detected!"
+    echo "Run: docker compose logs nextcloud-app"
+    echo "See troubleshooting section in this guide"
+else
+    echo "✅ No permission errors found"
+fi
+
+# Verify data directory ownership inside container
+echo ""
+echo "🔐 Verifying data directory ownership inside container..."
+echo "Expected: www-data www-data"
+echo "Actual:"
+docker exec nextcloud-app ls -ld /var/www/html/data | awk '{print "   Owner: "$3":"$4}'
+
+# Test web access
+echo ""
+echo "🌐 Testing web access..."
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+    echo "✅ Nextcloud web interface responding (HTTP $HTTP_CODE)"
+else
+    echo "⚠️  Nextcloud not ready yet (HTTP $HTTP_CODE) - may need more time"
+fi
+
+echo ""
+echo "✅ Deployment complete!"
+echo ""
+echo "📝 Next: Access Nextcloud in your browser and complete setup"
 ```
 
 ---
@@ -340,13 +406,15 @@ fi
 ## 🔧 Post-Installation Configuration
 
 ```bash
-# Check if Nextcloud is responding
-curl -I http://localhost
+# Wait for installation to complete
+echo "Waiting for Nextcloud to complete initial setup..."
+sleep 60
 
-# Wait for installation to complete (check logs if needed)
-docker compose logs nextcloud-app | grep "successfully installed"
+# Check if setup completed successfully
+docker compose logs nextcloud-app | tail -20
 
 # Run occ commands for database optimization
+echo "Running database optimization..."
 docker compose exec -u www-data nextcloud-app php occ db:add-missing-indices
 docker compose exec -u www-data nextcloud-app php occ db:convert-filecache-bigint
 
@@ -453,7 +521,7 @@ echo "==========================================="
 # Test local access
 echo "Testing local access..."
 LOCAL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
-if [ "$LOCAL_STATUS" = "200" ]; then
+if [ "$LOCAL_STATUS" = "200" ] || [ "$LOCAL_STATUS" = "302" ]; then
     echo "✅ Local access working (HTTP $LOCAL_STATUS)"
 else
     echo "❌ Local access failed (HTTP $LOCAL_STATUS)"
@@ -539,14 +607,24 @@ DB_PASS=$(openssl rand -base64 32)
 REDIS_PASS=$(openssl rand -base64 32)
 
 echo "Generated secure passwords:"
+echo "================================================"
 echo "Admin password: $ADMIN_PASS"
 echo "Database password: $DB_PASS" 
 echo "Redis password: $REDIS_PASS"
+echo "================================================"
 
 echo ""
 echo "⚠️  SAVE THESE PASSWORDS SECURELY!"
-echo "   Update docker-compose.yml with new passwords"
-echo "   Restart containers after updating"
+echo ""
+echo "📝 Next steps:"
+echo "   1. Update docker-compose.yml with new passwords"
+echo "   2. cd ~/docker-compose/nextcloud"
+echo "   3. docker compose down"
+echo "   4. docker compose up -d"
+echo "   5. Wait 2 minutes for reinitialization"
+echo ""
+echo "⚠️  Database password requires manual Nextcloud config update:"
+echo "   docker compose exec -u www-data nextcloud-app php occ config:system:set dbpassword --value=\"\$DB_PASS\""
 echo ""
 EOF
 
@@ -575,9 +653,14 @@ echo "💾 Storage Usage:"
 df -h /data/docker/nextcloud
 
 echo ""
+echo "🔐 Permission Check:"
+echo "Data directory ownership (should be www-data:www-data):"
+docker exec nextcloud-app ls -ld /var/www/html/data 2>/dev/null | awk '{print "   "$3":"$4}' || echo "   ⚠️  Container not running"
+
+echo ""
 echo "🌐 Web Access Test:"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
-if [ "$HTTP_CODE" = "200" ]; then
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
     echo "✅ Nextcloud is accessible (HTTP $HTTP_CODE)"
 else
     echo "❌ Nextcloud not responding (HTTP $HTTP_CODE)"
@@ -585,23 +668,27 @@ fi
 
 echo ""
 echo "📁 Verification Folders:"
-if [ -d "/data/incoming" ]; then
-    echo "✅ /data/incoming exists"
+if [ -d "/data/photo-consolidation/incoming" ]; then
+    echo "✅ /data/photo-consolidation/incoming exists"
 else
-    echo "⚠️  /data/incoming not found (normal before photo copy)"
+    echo "⚠️  /data/photo-consolidation/incoming not found (normal before photo copy)"
 fi
 
-if [ -d "/data/duplicates" ]; then
-    echo "✅ /data/duplicates exists"  
+if [ -d "/data/photo-consolidation/duplicates" ]; then
+    echo "✅ /data/photo-consolidation/duplicates exists"  
 else
-    echo "⚠️  /data/duplicates not found (normal before analysis)"
+    echo "⚠️  /data/photo-consolidation/duplicates not found (normal before analysis)"
 fi
 
-if [ -d "/data/final" ]; then
-    echo "✅ /data/final exists"
+if [ -d "/data/photo-consolidation/final" ]; then
+    echo "✅ /data/photo-consolidation/final exists"
 else
-    echo "⚠️  /data/final not found (normal before consolidation)"
+    echo "⚠️  /data/photo-consolidation/final not found (normal before consolidation)"
 fi
+
+echo ""
+echo "📝 Recent Logs (last 10 lines):"
+docker compose logs --tail=10 nextcloud-app 2>/dev/null || echo "   ⚠️  Could not fetch logs"
 EOF
 
 chmod +x ~/check-nextcloud.sh
@@ -611,20 +698,165 @@ echo "✅ Monitoring script created at ~/check-nextcloud.sh"
 
 ---
 
+## 🐛 Troubleshooting
+
+### Error: "Cannot create or write into the data directory"
+
+**Symptoms:**
+- Setup page shows data directory error
+- Container logs show "Permission denied"
+
+**Root Cause:** Data directory inside container is owned by `root:root` instead of `www-data:www-data`
+
+**Solution:**
+```bash
+# Stop containers
+cd ~/docker-compose/nextcloud
+docker compose down
+
+# Fix ownership on host
+sudo chown -R 33:33 /data/docker/nextcloud/data
+sudo chmod 770 /data/docker/nextcloud/data
+
+# Verify ownership was set
+ls -ld /data/docker/nextcloud/data
+
+# Clean any root-owned files inside
+sudo rm -rf /data/docker/nextcloud/data/*
+
+# Restart with clean slate
+docker compose up -d
+
+# Verify ownership inside container after restart
+sleep 30
+docker exec nextcloud-app ls -ld /var/www/html/data
+# Should show: drwxrwx--- ... www-data www-data
+```
+
+### Container Won't Start / Permission Denied in Logs
+
+**Check logs:**
+```bash
+cd ~/docker-compose/nextcloud
+docker compose logs nextcloud-app
+```
+
+**If you see: "cannot create /usr/local/etc/php/conf.d/redis-session.ini: Permission denied"**
+
+This means someone added `user: "33:33"` to the docker-compose.yml, which breaks initialization.
+
+**Fix:**
+```bash
+# Remove user: "33:33" from docker-compose.yml if present
+# The container MUST run as root for initialization
+# Only the mounted volumes need www-data ownership
+
+# Restart
+docker compose down
+docker compose up -d
+```
+
+### Container Keeps Restarting
+
+**Check status:**
+```bash
+docker compose ps
+docker compose logs --tail=50 nextcloud-app
+```
+
+**Common causes:**
+- Database not ready (check postgres-nextcloud health)
+- Redis not ready (check redis-nextcloud health)
+- Permission issues (see above)
+
+**Fix:**
+```bash
+# Check all service health
+docker compose ps
+
+# Restart all services in order
+docker compose down
+docker compose up -d
+
+# Watch logs
+docker compose logs -f
+```
+
+### Cannot Access via Web Browser
+
+**Test connectivity:**
+```bash
+# Test localhost
+curl -I http://localhost
+
+# Test local IP
+curl -I http://$(hostname -I | awk '{print $1}')
+
+# Check if Apache is listening
+docker exec nextcloud-app netstat -tlnp | grep :80
+```
+
+**Check firewall:**
+```bash
+sudo ufw status
+# If enabled, allow ports:
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+### Database Connection Errors
+
+**Verify PostgreSQL is healthy:**
+```bash
+docker compose exec postgres-nextcloud pg_isready -U nextcloud
+# Should return: "accepting connections"
+```
+
+**Check credentials:**
+```bash
+# Verify environment variables match in docker-compose.yml
+grep POSTGRES docker-compose.yml
+```
+
+**Reset database (CAUTION: Loses all data):**
+```bash
+docker compose down
+sudo rm -rf /data/docker/nextcloud/db/*
+docker compose up -d
+```
+
+### Verify Container Health
+
+```bash
+# All should show "Up" and "healthy"
+docker compose ps
+
+# Check individual services
+docker compose exec postgres-nextcloud pg_isready -U nextcloud
+docker compose exec redis-nextcloud redis-cli -a redis_pass_2024 ping
+
+# View detailed logs
+docker compose logs postgres-nextcloud
+docker compose logs redis-nextcloud
+docker compose logs nextcloud-app
+```
+
+---
+
 ## 🧪 Test Verification Interface
 
 ```bash
 # Create test directories to verify mounting works
-mkdir -p /data/incoming/test
-mkdir -p /data/duplicates/test
-mkdir -p /data/final/test
-mkdir -p /data/logs
+mkdir -p /data/photo-consolidation/incoming/test
+mkdir -p /data/photo-consolidation/duplicates/test
+mkdir -p /data/photo-consolidation/final/test
+mkdir -p /data/photo-consolidation/logs
 
 # Create test files
-echo "Test file from incoming" > /data/incoming/test/test.txt
-echo "Test file from duplicates" > /data/duplicates/test/test.txt
-echo "Test file from final" > /data/final/test/test.txt
-echo "Test log entry" > /data/logs/test.log
+echo "Test file from incoming" > /data/photo-consolidation/incoming/test/test.txt
+echo "Test file from duplicates" > /data/photo-consolidation/duplicates/test/test.txt
+echo "Test file from final" > /data/photo-consolidation/final/test/test.txt
+echo "Test log entry" > /data/photo-consolidation/logs/test.log
 
 # Restart Nextcloud to recognize mounts
 cd ~/docker-compose/nextcloud
@@ -634,7 +866,7 @@ docker compose restart nextcloud-app
 sleep 30
 
 # Test file access
-docker compose exec nextcloud-app ls -la /var/www/html/data/verification/
+docker compose exec nextcloud-app ls -la /var/www/html/data/
 
 echo "✅ Test files created - check web interface to verify folder access"
 ```
@@ -648,20 +880,20 @@ echo "✅ Test files created - check web interface to verify folder access"
 echo "=== NEXTCLOUD INSTALLATION SUMMARY ==="
 echo ""
 echo "✅ Nextcloud Services:"
-echo "   - Web Interface: http://$(hostname -I | awk '{print $1}'):8080"
+echo "   - Web Interface: http://$(hostname -I | awk '{print $1}')"
 echo "   - Database: PostgreSQL 15"
 echo "   - Cache: Redis 7"
 echo "   - Admin User: admin"
 echo ""
 echo "✅ Docker Containers:"
-docker compose ps
+cd ~/docker-compose/nextcloud && docker compose ps
 
 echo ""
 echo "✅ Storage Locations (all in /data partition - permanent):"
 echo "   - App Data: /data/docker/nextcloud/app"
-echo "   - Database: /data/docker/nextcloud/db"
+echo "   - Config: /data/docker/nextcloud/config"
 echo "   - User Data: /data/docker/nextcloud/data"
-echo "   - Configuration: /data/docker/nextcloud/config"
+echo "   - Database: /data/docker/nextcloud/db"
 echo "   - Redis: /data/docker/nextcloud/redis"
 echo ""
 echo "✅ User Files (read-write, permanent):"
@@ -674,8 +906,9 @@ echo "   - Final: /data/photo-consolidation/final"
 echo "   - Logs: /data/photo-consolidation/logs"
 echo ""
 echo "✅ Remote Access:"
-echo "   - Tailscale HTTPS: https://\$(tailscale status --json | grep -o '\"DNSName\":\"[^\"]*\"' | cut -d'\"' -f4 | sed 's/\.\$//')"
-echo "   - Local Network: http://\$(hostname -I | awk '{print \$1}')"
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+echo "   - Tailscale: http://$TAILSCALE_HOSTNAME (or https:// if certificates enabled)"
+echo "   - Local Network: http://$(hostname -I | awk '{print $1}')"
 echo ""
 echo "✅ Management Scripts:"
 echo "   - Status Check: ~/check-nextcloud.sh"
@@ -689,7 +922,7 @@ echo "   - Final result review"
 echo ""
 echo "⚠️  SECURITY REMINDERS:"
 echo "   - Change default passwords using ~/change-nextcloud-passwords.sh"
-echo "   - Nextcloud accessible via Tailscale HTTPS (secure remote access)"
+echo "   - Nextcloud accessible via Tailscale (secure remote access)"
 echo "   - All photo mounts are read-only for safety"
 echo "   - Tailscale provides zero-trust network security"
 echo ""
@@ -701,21 +934,16 @@ echo ""
 
 After completing this phase:
 
-1. **Deploy Nextcloud**: Follow the deployment steps above
-2. **Test Access**:
-   - Local: `http://your-server-ip`
-   - Remote: `http://your-tailscale-hostname.ts.net` or `http://100.x.x.x`
-3. **(Optional) Enable HTTPS**:
-   - Enable HTTPS in Tailscale Admin Console (see Prerequisites)
-   - Run `sudo tailscale cert $TAILSCALE_HOSTNAME`
-   - Access via: `https://your-tailscale-hostname.ts.net`
-4. **Security**: Run `~/change-nextcloud-passwords.sh` and update docker-compose.yml
+1. **Access Nextcloud**: Open in browser using one of the URLs above
+2. **Complete Initial Setup**: Follow the web wizard (should be pre-configured)
+3. **Change Default Passwords**: Run `~/change-nextcloud-passwords.sh`
+4. **(Optional) Enable HTTPS**: Follow Tailscale HTTPS section above
 5. **Phase 5**: Start photo consolidation process using Ansible from laptop
 6. **Verification**: Use Nextcloud interface to review each consolidation phase
 
 **Important Notes:**
 - Nextcloud runs on ports 80/443 for HTTP/HTTPS access
-- Tailscale provides automatic HTTPS with valid certificates
+- Tailscale provides automatic HTTPS with valid certificates (optional)
 - All photo directories mounted as read-only for safety
 - Interface will populate as photo consolidation phases complete
 - All data stored in /data partition (799GB available)
