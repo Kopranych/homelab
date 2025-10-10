@@ -5,11 +5,34 @@ Install Nextcloud using Docker to provide a web interface for photo verification
 
 ## ⚠️ Prerequisites
 - Ubuntu Server 22.04 LTS installed (Phase 2) ✅
-- Basic configuration and Tailscale setup (Phase 3) ✅  
+- Basic configuration and Tailscale setup (Phase 3) ✅
 - Docker will be installed as part of this phase
 - Remote Ansible access from laptop configured
 
 **Important**: Installing Nextcloud on main NVMe system since old drives contain photos and cannot be used yet.
+
+### (Optional) Enable HTTPS in Tailscale Admin Console
+
+**HTTPS is optional** - Tailscale VPN already encrypts all traffic, so HTTP over Tailscale is secure. However, HTTPS provides:
+- Valid certificates for Nextcloud mobile apps (some may require HTTPS)
+- Browser security indicators (no "Not Secure" warnings)
+- Additional encryption layer
+
+If you want HTTPS support:
+
+1. Go to [Tailscale Admin Console](https://login.tailscale.com/admin)
+2. Navigate to **DNS** settings
+3. Click **"Enable HTTPS"** button
+4. Confirm the action
+
+This enables:
+- MagicDNS hostnames (e.g., `homelab.tail1234.ts.net`)
+- Automatic HTTPS certificate provisioning
+- Support for `tailscale cert` command
+
+**Note**: This is a one-time setup for your entire Tailscale network (tailnet). Once enabled, all devices can request HTTPS certificates.
+
+**If you skip this**: You can still access Nextcloud via `http://homelab.ts.net` or `http://100.x.x.x` (Tailscale IP) - both are secure due to VPN encryption.
 
 ---
 
@@ -79,8 +102,8 @@ df -h /home
 ```
 
 **Storage Strategy:**
-- `/home` - Nextcloud app, database, and Redis (temporary, will migrate to new SSD later)
-- `/data/nextcloud/files` - Your new photos/documents uploaded via Nextcloud (permanent, 799GB available)
+- `/data/docker/nextcloud` - All Nextcloud app, database, and Redis data (permanent, 799GB available)
+- `/data/nextcloud/files` - Your new photos/documents uploaded via Nextcloud (permanent storage)
 - `/data/photo-consolidation` - Old photos verification workflow (read-only, temporary for consolidation process)
 
 ---
@@ -106,13 +129,21 @@ echo "✅ Old Nextcloud removed"
 ## 📁 Create Nextcloud Directory Structure
 
 ```bash
-# Create Nextcloud directories in /home partition (temporary location)
-sudo mkdir -p /home/docker/nextcloud/app
-sudo mkdir -p /home/docker/nextcloud/db
-sudo mkdir -p /home/docker/nextcloud/config
-sudo mkdir -p /home/docker/nextcloud/data
-sudo mkdir -p /home/docker/nextcloud/redis
-sudo mkdir -p /home/docker/nextcloud/logs
+# Get Tailscale hostname for configuration
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ]; then
+    echo "⚠️  Warning: Could not detect Tailscale hostname. Using fallback."
+    TAILSCALE_HOSTNAME="homelab.tailXXXX.ts.net"
+fi
+
+echo "Detected Tailscale hostname: $TAILSCALE_HOSTNAME"
+echo ""
+
+# Create Nextcloud directories in /data partition (permanent storage)
+sudo mkdir -p /data/docker/nextcloud/app
+sudo mkdir -p /data/docker/nextcloud/db
+sudo mkdir -p /data/docker/nextcloud/redis
+# Note: config and data will be created by Nextcloud inside /app directory automatically
 
 # Create Nextcloud user files directory in /data (permanent storage for new photos/files)
 sudo mkdir -p /data/nextcloud/files
@@ -124,9 +155,7 @@ sudo mkdir -p /data/photo-consolidation/final
 sudo mkdir -p /data/photo-consolidation/logs
 
 # Set proper ownership - Nextcloud container runs as www-data (UID 33)
-sudo chown -R 33:33 /home/docker/nextcloud/app
-sudo chown -R 33:33 /home/docker/nextcloud/config
-sudo chown -R 33:33 /home/docker/nextcloud/data
+sudo chown -R 33:33 /data/docker/nextcloud/app
 sudo chown -R 33:33 /data/nextcloud/files
 sudo chown -R 33:33 /data/photo-consolidation
 
@@ -135,9 +164,10 @@ mkdir -p ~/docker-compose/nextcloud
 cd ~/docker-compose/nextcloud
 
 echo "✅ Nextcloud directories created"
-echo "ℹ️  App/DB in /home (temporary, will migrate to new SSD later)"
+echo "ℹ️  All Nextcloud data in /data partition (permanent storage, 799GB available)"
 echo "ℹ️  User files in /data/nextcloud/files (permanent storage for new photos)"
 echo "ℹ️  Photo consolidation in /data/photo-consolidation (verification only)"
+echo "ℹ️  Tailscale HTTPS will be configured: https://$TAILSCALE_HOSTNAME"
 ```
 
 ---
@@ -150,6 +180,10 @@ echo "ℹ️  Photo consolidation in /data/photo-consolidation (verification onl
 - **Benefits**: Independent upgrades, easier backups, no conflicts between services
 
 ```bash
+# Get network configuration
+LOCAL_IP=$(hostname -I | awk '{print $1}')
+TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "100.x.x.x")
+
 # Create docker-compose.yml for Nextcloud
 cat > docker-compose.yml << 'EOF'
 services:
@@ -158,7 +192,7 @@ services:
     container_name: postgres-nextcloud
     restart: unless-stopped
     volumes:
-      - /home/docker/nextcloud/db:/var/lib/postgresql/data
+      - /data/docker/nextcloud/db:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=nextcloud
       - POSTGRES_USER=nextcloud
@@ -178,7 +212,7 @@ services:
     restart: unless-stopped
     command: redis-server --requirepass redis_pass_2024
     volumes:
-      - /home/docker/nextcloud/redis:/data
+      - /data/docker/nextcloud/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
@@ -192,24 +226,17 @@ services:
     container_name: nextcloud-app
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "80:80"
+      - "443:443"
     depends_on:
       postgres-nextcloud:
         condition: service_healthy
       redis-nextcloud:
         condition: service_healthy
     volumes:
-      # Nextcloud app files in /home (temporary, will migrate to new SSD)
-      - /home/docker/nextcloud/app:/var/www/html
-      - /home/docker/nextcloud/config:/var/www/html/config
-      - /home/docker/nextcloud/data:/var/www/html/data
-      # User files - permanent storage in /data for new photos/documents
-      - /data/nextcloud/files:/var/www/html/data/admin/files
-      # Photo consolidation verification mounts (read-only, temporary for verification)
-      - /data/photo-consolidation/incoming:/var/www/html/data/admin/files/photo-consolidation/incoming:ro
-      - /data/photo-consolidation/duplicates:/var/www/html/data/admin/files/photo-consolidation/duplicates:ro
-      - /data/photo-consolidation/final:/var/www/html/data/admin/files/photo-consolidation/final:ro
-      - /data/photo-consolidation/logs:/var/www/html/data/admin/files/photo-consolidation/logs:ro
+      - /data/docker/nextcloud/app:/var/www/html
+      - /data/docker/nextcloud/config:/var/www/html/config
+      - /data/docker/nextcloud/data:/var/www/html/data
     environment:
       - POSTGRES_DB=nextcloud
       - POSTGRES_USER=nextcloud
@@ -219,9 +246,7 @@ services:
       - REDIS_HOST_PASSWORD=redis_pass_2024
       - NEXTCLOUD_ADMIN_PASSWORD=admin_pass_2024
       - NEXTCLOUD_ADMIN_USER=admin
-      - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.8.107 homelab
-      - OVERWRITEHOST=192.168.8.107:8080
-      - OVERWRITEPROTOCOL=http
+      - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.8.107 homelab homelab.nebelung-mercat.ts.net 100.65.45.18
     networks:
       - nextcloud-network
 
@@ -232,8 +257,9 @@ networks:
 EOF
 
 echo "✅ Docker Compose configuration created"
-echo "ℹ️  Using /home for Nextcloud files (will migrate to new SSD later)"
-echo "ℹ️  Photo verification mounts point to /data (permanent storage)"
+echo "ℹ️  All Nextcloud data in /data partition (permanent storage)"
+echo "ℹ️  Tailscale access: http://$TAILSCALE_HOSTNAME (or https:// if you enable it)"
+echo "ℹ️  Local network access: http://$LOCAL_IP"
 echo "ℹ️  Dedicated postgres-nextcloud and redis-nextcloud containers"
 echo "ℹ️  Lab apps will use separate shared PostgreSQL/Redis stack"
 ```
@@ -266,11 +292,56 @@ sleep 120
 
 ---
 
+## 🔐 (Optional) Enable Tailscale HTTPS Certificates
+
+**This step is optional.** Skip this if you're comfortable accessing Nextcloud via HTTP over Tailscale VPN (which is already encrypted).
+
+**Prerequisites**: Make sure you've enabled HTTPS in your Tailscale Admin Console (see Prerequisites section above).
+
+If you want HTTPS support, request certificates for your server:
+
+```bash
+# Get your Tailscale hostname
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+echo "Your Tailscale hostname: $TAILSCALE_HOSTNAME"
+
+# Request HTTPS certificate from Tailscale
+sudo tailscale cert $TAILSCALE_HOSTNAME
+
+# This will create certificates at:
+# /var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.crt
+# /var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.key
+
+# Verify certificates were created
+echo "Verifying certificates..."
+sudo ls -la /var/lib/tailscale/certs/
+
+if [ -f "/var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.crt" ]; then
+    echo "✅ Tailscale HTTPS certificates obtained successfully"
+    echo "ℹ️  Nextcloud will be accessible via https://$TAILSCALE_HOSTNAME"
+else
+    echo "❌ Certificate generation failed. Check:"
+    echo "   1. HTTPS is enabled in Tailscale Admin Console"
+    echo "   2. Your device is connected to Tailscale"
+    echo "   3. MagicDNS is working: ping $TAILSCALE_HOSTNAME"
+fi
+```
+
+**How It Works:**
+- Tailscale uses Let's Encrypt to generate valid HTTPS certificates
+- Certificates are automatically renewed by Tailscale
+- Apache in the Nextcloud container will use these certificates when accessed via HTTPS
+- HTTP access (local network) continues to work normally
+
+**Note**: The Nextcloud container will automatically use HTTPS when accessed via the Tailscale hostname on port 443.
+
+---
+
 ## 🔧 Post-Installation Configuration
 
 ```bash
 # Check if Nextcloud is responding
-curl -I http://localhost:8080
+curl -I http://localhost
 
 # Wait for installation to complete (check logs if needed)
 docker compose logs nextcloud-app | grep "successfully installed"
@@ -346,27 +417,58 @@ echo "✅ Verification guide created"
 ## 🌐 Access and Test Nextcloud
 
 ```bash
-# Get server IP for access
+# Get server access URLs
 SERVER_IP=$(hostname -I | awk '{print $1}')
-echo "Nextcloud is accessible at:"
-echo "  Local: http://localhost:8080"
-echo "  Network: http://$SERVER_IP:8080"
-echo "  Tailscale: http://$(tailscale ip -4):8080"
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+
+echo "==========================================="
+echo "Nextcloud Access URLs:"
+echo "==========================================="
 echo ""
+echo "🌍 Remote Access (Tailscale - Recommended):"
+echo "   http://$TAILSCALE_HOSTNAME (or https:// if you enabled HTTPS certificates)"
+echo "   ✅ Works from anywhere with Tailscale"
+echo "   ✅ Encrypted via Tailscale VPN tunnel"
+echo "   ✅ No port forwarding needed"
+echo ""
+echo "🏠 Local Network Access:"
+echo "   http://$SERVER_IP"
+echo "   ⚠️  Only works on home network"
+echo "   ⚠️  No encryption (HTTP only)"
+echo ""
+echo "💻 Localhost (on server):"
+echo "   http://localhost"
+echo ""
+echo "==========================================="
 echo "Default credentials:"
 echo "  Username: admin"
 echo "  Password: admin_pass_2024"
 echo ""
-echo "⚠️  Change the default password after first login!"
+echo "⚠️  IMPORTANT: Change the default password after first login!"
+echo "==========================================="
 ```
 
 ### Test Web Access
 ```bash
-# Test web access
-curl -s -o /dev/null -w "%{http_code}" http://localhost:8080
+# Test local access
+echo "Testing local access..."
+LOCAL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+if [ "$LOCAL_STATUS" = "200" ]; then
+    echo "✅ Local access working (HTTP $LOCAL_STATUS)"
+else
+    echo "❌ Local access failed (HTTP $LOCAL_STATUS)"
+fi
 
-# Expected output: 200 (success)
-# If you get 200, Nextcloud is working properly
+# Test Tailscale HTTPS access
+echo ""
+echo "Testing Tailscale HTTPS access..."
+TAILSCALE_STATUS=$(curl -s -k -o /dev/null -w "%{http_code}" https://$TAILSCALE_HOSTNAME)
+if [ "$TAILSCALE_STATUS" = "200" ] || [ "$TAILSCALE_STATUS" = "302" ]; then
+    echo "✅ Tailscale HTTPS access working (HTTP $TAILSCALE_STATUS)"
+    echo "   Access your Nextcloud at: https://$TAILSCALE_HOSTNAME"
+else
+    echo "⚠️  Tailscale HTTPS may need configuration (HTTP $TAILSCALE_STATUS)"
+fi
 ```
 
 ---
@@ -374,26 +476,35 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:8080
 ## 📱 Connect Nextcloud Mobile App
 
 ### iPhone/iPad Setup
-1. **Install Nextcloud app** from the App Store
-2. **For home network access:**
+1. **Install Tailscale** from the App Store
+   - Log in to your Tailscale account
+   - Turn on Tailscale VPN
+
+2. **Install Nextcloud app** from the App Store
+
+3. **Connect to Nextcloud:**
    - Open Nextcloud app
    - Tap "Log in"
-   - Server URL: `http://192.168.8.107:8080`
+   - Server URL: `https://YOUR-TAILSCALE-HOSTNAME.ts.net` (get from server: `tailscale status`)
    - Username: `admin`
    - Password: `admin_pass_2024`
    - Grant permissions when prompted
 
-3. **For remote access (away from home):**
-   - Install Tailscale app from App Store
-   - Log in to your Tailscale account
-   - Turn on Tailscale VPN
-   - In Nextcloud app, use server URL from: `tailscale ip -4` (run on server)
-   - Format: `http://100.64.x.x:8080`
+4. **✅ Benefits:**
+   - Works at home AND remotely
+   - Automatic HTTPS encryption
+   - No configuration changes needed when traveling
 
 ### Android Setup
-1. **Install Nextcloud app** from Google Play Store
-2. Follow same steps as iPhone above
-3. **For remote access:** Install Tailscale from Google Play
+1. **Install Tailscale** from Google Play Store
+   - Log in to your Tailscale account
+   - Turn on Tailscale VPN
+
+2. **Install Nextcloud app** from Google Play Store
+
+3. **Connect to Nextcloud:**
+   - Follow same steps as iPhone above
+   - Server URL: `https://YOUR-TAILSCALE-HOSTNAME.ts.net`
 
 ### Auto-Upload Photos (Optional)
 ```bash
@@ -401,10 +512,16 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:8080
 # 1. Go to Settings → Auto upload
 # 2. Enable "Instant upload"
 # 3. Choose folder: /Photos or create new folder
-# 4. Enable "Upload via WiFi only" to save mobile data
+# 4. Enable "Upload via WiFi only" to save mobile data (or allow cellular if desired)
 ```
 
-**Tip:** Get your Tailscale IP on server: `tailscale ip -4`
+### Get Your Tailscale Hostname
+Run this on your server to get the URL for mobile apps:
+```bash
+tailscale status --json | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//'
+# Example output: homelab.tail1234.ts.net
+# Use: https://homelab.tail1234.ts.net
+```
 
 ---
 
@@ -455,7 +572,7 @@ cd ~/docker-compose/nextcloud && docker compose ps
 
 echo ""
 echo "💾 Storage Usage:"
-df -h /home/docker/nextcloud
+df -h /data/docker/nextcloud
 
 echo ""
 echo "🌐 Web Access Test:"
@@ -540,20 +657,25 @@ echo "✅ Docker Containers:"
 docker compose ps
 
 echo ""
-echo "✅ Storage Locations:"
-echo "   - App Data: /home/docker/nextcloud/app (temporary, will migrate to new SSD)"
-echo "   - Database: /home/docker/nextcloud/db (temporary, will migrate to new SSD)"
-echo "   - User Data: /home/docker/nextcloud/data (temporary, will migrate to new SSD)"
-echo "   - Configuration: /home/docker/nextcloud/config (temporary, will migrate to new SSD)"
+echo "✅ Storage Locations (all in /data partition - permanent):"
+echo "   - App Data: /data/docker/nextcloud/app"
+echo "   - Database: /data/docker/nextcloud/db"
+echo "   - User Data: /data/docker/nextcloud/data"
+echo "   - Configuration: /data/docker/nextcloud/config"
+echo "   - Redis: /data/docker/nextcloud/redis"
 echo ""
-echo "✅ User Files (read-write, permanent in /data):"
+echo "✅ User Files (read-write, permanent):"
 echo "   - Nextcloud Files: /data/nextcloud/files → admin/files"
 echo ""
-echo "✅ Photo Consolidation Mounts (read-only, temporary):"
+echo "✅ Photo Consolidation Mounts (read-only for verification):"
 echo "   - Incoming: /data/photo-consolidation/incoming"
 echo "   - Duplicates: /data/photo-consolidation/duplicates"
 echo "   - Final: /data/photo-consolidation/final"
 echo "   - Logs: /data/photo-consolidation/logs"
+echo ""
+echo "✅ Remote Access:"
+echo "   - Tailscale HTTPS: https://\$(tailscale status --json | grep -o '\"DNSName\":\"[^\"]*\"' | cut -d'\"' -f4 | sed 's/\.\$//')"
+echo "   - Local Network: http://\$(hostname -I | awk '{print \$1}')"
 echo ""
 echo "✅ Management Scripts:"
 echo "   - Status Check: ~/check-nextcloud.sh"
@@ -567,8 +689,9 @@ echo "   - Final result review"
 echo ""
 echo "⚠️  SECURITY REMINDERS:"
 echo "   - Change default passwords using ~/change-nextcloud-passwords.sh"
-echo "   - Nextcloud is only accessible on local network"
+echo "   - Nextcloud accessible via Tailscale HTTPS (secure remote access)"
 echo "   - All photo mounts are read-only for safety"
+echo "   - Tailscale provides zero-trust network security"
 echo ""
 ```
 
@@ -578,16 +701,24 @@ echo ""
 
 After completing this phase:
 
-1. **Security**: Run `~/change-nextcloud-passwords.sh` and update docker-compose.yml
-2. **Access Test**: Open http://your-server-ip:8080 and log in
-3. **Phase 5**: Start photo consolidation process using Ansible from laptop
-4. **Verification**: Use Nextcloud interface to review each consolidation phase
+1. **Deploy Nextcloud**: Follow the deployment steps above
+2. **Test Access**:
+   - Local: `http://your-server-ip`
+   - Remote: `http://your-tailscale-hostname.ts.net` or `http://100.x.x.x`
+3. **(Optional) Enable HTTPS**:
+   - Enable HTTPS in Tailscale Admin Console (see Prerequisites)
+   - Run `sudo tailscale cert $TAILSCALE_HOSTNAME`
+   - Access via: `https://your-tailscale-hostname.ts.net`
+4. **Security**: Run `~/change-nextcloud-passwords.sh` and update docker-compose.yml
+5. **Phase 5**: Start photo consolidation process using Ansible from laptop
+6. **Verification**: Use Nextcloud interface to review each consolidation phase
 
 **Important Notes:**
-- Nextcloud runs on port 8080 (avoid conflicts with other services)
+- Nextcloud runs on ports 80/443 for HTTP/HTTPS access
+- Tailscale provides automatic HTTPS with valid certificates
 - All photo directories mounted as read-only for safety
 - Interface will populate as photo consolidation phases complete
-- Can be relocated to dedicated storage in Phase 6
+- All data stored in /data partition (799GB available)
 
 ---
 
