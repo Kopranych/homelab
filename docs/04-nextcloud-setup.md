@@ -130,9 +130,23 @@ echo "✅ Old Nextcloud removed"
 
 ```bash
 # Get Tailscale hostname for configuration
-TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+# Try multiple methods to detect Tailscale hostname
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    # Fallback: try without jq
+    TAILSCALE_HOSTNAME=$(tailscale status 2>/dev/null | grep -E "^$(hostname)" | awk '{print $2}' | sed 's/\.$//')
+fi
+
 if [ -z "$TAILSCALE_HOSTNAME" ]; then
-    echo "⚠️  Warning: Could not detect Tailscale hostname. Using fallback."
+    # Fallback: try to get from tailscale status without JSON
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+if [ -z "$TAILSCALE_HOSTNAME" ]; then
+    echo "⚠️  Warning: Could not auto-detect Tailscale hostname."
+    echo "    Please run 'tailscale status' to see your hostname"
+    echo "    Then set it manually: TAILSCALE_HOSTNAME=\"your-hostname.ts.net\""
     TAILSCALE_HOSTNAME="homelab.tailXXXX.ts.net"
 fi
 
@@ -207,7 +221,20 @@ echo "ℹ️  Tailscale HTTPS will be configured: https://$TAILSCALE_HOSTNAME"
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "100.x.x.x")
 
-# Create docker-compose.yml for Nextcloud
+# Get Tailscale hostname - try multiple methods
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status 2>/dev/null | grep -E "^$(hostname)" | awk '{print $2}' | sed 's/\.$//')
+fi
+if [ -z "$TAILSCALE_HOSTNAME" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+# Note: HTTPS will be handled by Traefik reverse proxy
+# This approach avoids file mounting issues on Ubuntu Core
+echo "ℹ️  HTTPS will be configured via Traefik reverse proxy"
+
+# Create docker-compose.yml for Nextcloud with HTTPS support via Traefik
 cat > docker-compose.yml << 'EOF'
 services:
   postgres-nextcloud:
@@ -248,9 +275,8 @@ services:
     image: nextcloud:28-apache
     container_name: nextcloud-app
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    expose:
+      - "80"
     depends_on:
       postgres-nextcloud:
         condition: service_healthy
@@ -270,8 +296,38 @@ services:
       - NEXTCLOUD_ADMIN_PASSWORD=admin_pass_2024
       - NEXTCLOUD_ADMIN_USER=admin
       - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.8.107 homelab homelab.nebelung-mercat.ts.net 100.65.45.18
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITEHOST=homelab.nebelung-mercat.ts.net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nextcloud.rule=Host(`homelab.nebelung-mercat.ts.net`)"
+      - "traefik.http.routers.nextcloud.entrypoints=websecure"
+      - "traefik.http.routers.nextcloud.tls=true"
+      - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.nextcloud-headers.headers.stsSeconds=15552000"
     networks:
       - nextcloud-network
+
+  traefik:
+    image: traefik:v2.10
+    container_name: nextcloud-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--providers.file.directory=/certs"
+      - "--providers.file.watch=true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - nextcloud-network
+    depends_on:
+      - nextcloud-app
 
 networks:
   nextcloud-network:
@@ -279,16 +335,19 @@ networks:
 
 EOF
 
-echo "✅ Docker Compose configuration created"
+
+echo "✅ Docker Compose configuration created with HTTPS support"
 echo ""
 echo "ℹ️  Configuration Notes:"
 echo "   - Container runs as root (needed for PHP/Apache initialization)"
 echo "   - Apache inside runs as www-data (UID 33)"
 echo "   - Mounted volumes owned by www-data on host (set earlier)"
+echo "   - SSL modules will be enabled automatically if certificates exist"
 echo "   - DO NOT add 'user: 33:33' - breaks initialization"
 echo ""
 echo "ℹ️  Access URLs:"
-echo "   Tailscale: http://$TAILSCALE_HOSTNAME (or https:// if enabled)"
+echo "   Tailscale HTTPS: https://$TAILSCALE_HOSTNAME (after certificate setup)"
+echo "   Tailscale HTTP: http://$TAILSCALE_HOSTNAME"
 echo "   Local: http://$LOCAL_IP"
 echo ""
 echo "ℹ️  Database Architecture:"
@@ -319,8 +378,54 @@ docker compose ps
 
 # Wait for initialization
 echo ""
-echo "⏳ Waiting 60 seconds for Nextcloud initialization..."
-sleep 60
+echo "⏳ Waiting 30 seconds for containers to start..."
+sleep 30
+
+# If you prepared HTTPS certificates earlier, copy them into Traefik container
+if [ -f "~/docker-compose/nextcloud/certs/*.crt" ]; then
+    echo ""
+    echo "🔐 Copying HTTPS certificates into Traefik container..."
+
+    # Get Tailscale hostname
+    TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+    if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+        TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+    fi
+
+    # Create /certs directory in container
+    docker exec nextcloud-traefik mkdir -p /certs
+
+    # Copy certificates into container
+    docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt nextcloud-traefik:/certs/
+    docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.key nextcloud-traefik:/certs/
+
+    # Copy Traefik dynamic configuration
+    docker cp ~/docker-compose/nextcloud/dynamic.yml nextcloud-traefik:/certs/
+
+    # Set correct permissions inside container
+    docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.crt
+    docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.key
+    docker exec nextcloud-traefik chmod 644 /certs/dynamic.yml
+
+    # Verify files were copied
+    echo "Verifying certificates in container:"
+    docker exec nextcloud-traefik ls -la /certs/
+
+    # Restart Traefik to load certificates
+    echo "Restarting Traefik to load certificates..."
+    docker compose restart traefik
+
+    echo "✅ HTTPS certificates configured"
+    echo "   Access via: https://$TAILSCALE_HOSTNAME"
+else
+    echo "ℹ️  No HTTPS certificates found - using HTTP only"
+    echo "   Access via: http://$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')"
+fi
+
+# Wait a bit more after Traefik restart
+echo ""
+echo "⏳ Waiting 30 seconds for Nextcloud initialization..."
+sleep 30
 
 # Check for errors
 echo ""
@@ -350,6 +455,24 @@ else
     echo "⚠️  Nextcloud not ready yet (HTTP $HTTP_CODE) - may need more time"
 fi
 
+# Test HTTPS if certificates were configured
+if [ -f "~/docker-compose/nextcloud/certs/*.crt" ]; then
+    echo ""
+    echo "Testing HTTPS access..."
+    TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+    if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+        TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+    fi
+
+    HTTPS_CODE=$(curl -s -k -o /dev/null -w "%{http_code}" https://$TAILSCALE_HOSTNAME)
+    if [ "$HTTPS_CODE" = "200" ] || [ "$HTTPS_CODE" = "302" ]; then
+        echo "✅ HTTPS access working (HTTP $HTTPS_CODE)"
+    else
+        echo "⚠️  HTTPS not responding (HTTP $HTTPS_CODE) - check Traefik logs"
+        echo "Run: docker compose logs traefik"
+    fi
+fi
+
 echo ""
 echo "✅ Deployment complete!"
 echo ""
@@ -358,17 +481,20 @@ echo "📝 Next: Access Nextcloud in your browser and complete setup"
 
 ---
 
-## 🔐 (Optional) Enable Tailscale HTTPS Certificates
+## 🔐 (Optional) Prepare Tailscale HTTPS Certificates
 
 **This step is optional.** Skip this if you're comfortable accessing Nextcloud via HTTP over Tailscale VPN (which is already encrypted).
 
 **Prerequisites**: Make sure you've enabled HTTPS in your Tailscale Admin Console (see Prerequisites section above).
 
-If you want HTTPS support, request certificates for your server:
+If you want HTTPS support, request and prepare certificates:
 
 ```bash
 # Get your Tailscale hostname
-TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
 echo "Your Tailscale hostname: $TAILSCALE_HOSTNAME"
 
 # Request HTTPS certificate from Tailscale
@@ -384,7 +510,35 @@ sudo ls -la /var/lib/tailscale/certs/
 
 if [ -f "/var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.crt" ]; then
     echo "✅ Tailscale HTTPS certificates obtained successfully"
-    echo "ℹ️  Nextcloud will be accessible via https://$TAILSCALE_HOSTNAME"
+
+    # Copy certificates to home directory for Docker access
+    # Ubuntu Core Docker snap can access home directories but not /data/
+    echo "Copying certificates to ~/docker-compose/nextcloud/certs/..."
+    mkdir -p ~/docker-compose/nextcloud/certs
+    sudo cp /var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.crt ~/docker-compose/nextcloud/certs/
+    sudo cp /var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.key ~/docker-compose/nextcloud/certs/
+    sudo chown $USER:$USER ~/docker-compose/nextcloud/certs/*
+    chmod 644 ~/docker-compose/nextcloud/certs/*
+
+    # Create Traefik dynamic configuration
+    cat > ~/docker-compose/nextcloud/dynamic.yml << EOF
+tls:
+  certificates:
+    - certFile: /certs/$TAILSCALE_HOSTNAME.crt
+      keyFile: /certs/$TAILSCALE_HOSTNAME.key
+      stores:
+        - default
+
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/$TAILSCALE_HOSTNAME.crt
+        keyFile: /certs/$TAILSCALE_HOSTNAME.key
+EOF
+
+    echo "✅ Certificates copied to ~/docker-compose/nextcloud/certs/"
+    echo "✅ Traefik configuration created at ~/docker-compose/nextcloud/dynamic.yml"
+    echo "ℹ️  These will be copied into Traefik container after deployment"
 else
     echo "❌ Certificate generation failed. Check:"
     echo "   1. HTTPS is enabled in Tailscale Admin Console"
@@ -396,10 +550,10 @@ fi
 **How It Works:**
 - Tailscale uses Let's Encrypt to generate valid HTTPS certificates
 - Certificates are automatically renewed by Tailscale
-- Apache in the Nextcloud container will use these certificates when accessed via HTTPS
-- HTTP access (local network) continues to work normally
+- Traefik reverse proxy will handle SSL termination
+- Certificates are copied into Traefik container using `docker cp` after deployment
 
-**Note**: The Nextcloud container will automatically use HTTPS when accessed via the Tailscale hostname on port 443.
+**Note**: On Ubuntu Core, Docker snap can access files in home directory but not /data/ partition.
 
 ---
 
@@ -487,7 +641,10 @@ echo "✅ Verification guide created"
 ```bash
 # Get server access URLs
 SERVER_IP=$(hostname -I | awk '{print $1}')
-TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
 
 echo "==========================================="
 echo "Nextcloud Access URLs:"
@@ -586,9 +743,14 @@ fi
 ### Get Your Tailscale Hostname
 Run this on your server to get the URL for mobile apps:
 ```bash
-tailscale status --json | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//'
-# Example output: homelab.tail1234.ts.net
-# Use: https://homelab.tail1234.ts.net
+# Method 1: Simple tailscale status (easiest)
+tailscale status --peers=false | awk 'NR==1 {print $2}' | sed 's/\.$//'
+
+# Method 2: Using jq (if installed)
+tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//'
+
+# Example output: homelab.nebelung-mercat.ts.net
+# Use: https://homelab.nebelung-mercat.ts.net
 ```
 
 ---
@@ -906,7 +1068,10 @@ echo "   - Final: /data/photo-consolidation/final"
 echo "   - Logs: /data/photo-consolidation/logs"
 echo ""
 echo "✅ Remote Access:"
-TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | cut -d'"' -f4 | sed 's/\.$//')
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
 echo "   - Tailscale: http://$TAILSCALE_HOSTNAME (or https:// if certificates enabled)"
 echo "   - Local Network: http://$(hostname -I | awk '{print $1}')"
 echo ""
@@ -926,6 +1091,385 @@ echo "   - Nextcloud accessible via Tailscale (secure remote access)"
 echo "   - All photo mounts are read-only for safety"
 echo "   - Tailscale provides zero-trust network security"
 echo ""
+```
+
+---
+
+## 🔄 Migrating Existing Nextcloud to HTTPS with Traefik (If Already Installed)
+
+If you already have Nextcloud running without HTTPS and want to add HTTPS support with Tailscale certificates using Traefik reverse proxy, follow these steps:
+
+### Step 1: Obtain and Prepare Tailscale Certificates
+
+```bash
+# Enable HTTPS in Tailscale Admin Console first (see Prerequisites section)
+
+# Get your Tailscale hostname
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+echo "Your Tailscale hostname: $TAILSCALE_HOSTNAME"
+
+# Request HTTPS certificate from Tailscale
+sudo tailscale cert $TAILSCALE_HOSTNAME
+
+# Verify certificates were created
+sudo ls -la /var/lib/tailscale/certs/
+
+# Copy certificates to home directory for Docker access
+# Ubuntu Core Docker snap can access home directories but not /data/
+echo "Copying certificates to ~/docker-compose/nextcloud/certs/..."
+mkdir -p ~/docker-compose/nextcloud/certs
+sudo cp /var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.crt ~/docker-compose/nextcloud/certs/
+sudo cp /var/lib/tailscale/certs/$TAILSCALE_HOSTNAME.key ~/docker-compose/nextcloud/certs/
+sudo chown $USER:$USER ~/docker-compose/nextcloud/certs/*
+chmod 644 ~/docker-compose/nextcloud/certs/*
+
+# Create Traefik dynamic configuration
+cat > ~/docker-compose/nextcloud/dynamic.yml << EOF
+tls:
+  certificates:
+    - certFile: /certs/$TAILSCALE_HOSTNAME.crt
+      keyFile: /certs/$TAILSCALE_HOSTNAME.key
+      stores:
+        - default
+
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/$TAILSCALE_HOSTNAME.crt
+        keyFile: /certs/$TAILSCALE_HOSTNAME.key
+EOF
+
+echo "✅ Certificates copied to ~/docker-compose/nextcloud/certs/"
+echo "✅ Traefik configuration created at ~/docker-compose/nextcloud/dynamic.yml"
+```
+
+### Step 2: Backup Current Configuration
+
+```bash
+# Navigate to your Nextcloud docker-compose directory
+cd ~/docker-compose/nextcloud
+
+# Backup current docker-compose.yml
+cp docker-compose.yml docker-compose.yml.backup.$(date +%Y%m%d_%H%M%S)
+
+echo "✅ Backup created"
+```
+
+### Step 3: Update docker-compose.yml to Add Traefik
+
+**Manually edit your existing docker-compose.yml:**
+
+1. **Update nextcloud-app service** to remove port mappings and add Traefik labels:
+
+```yaml
+  nextcloud-app:
+    # Remove or comment out these lines:
+    # ports:
+    #   - "80:80"
+    #   - "443:443"
+
+    # Add expose instead:
+    expose:
+      - "80"
+
+    # Add these environment variables:
+    environment:
+      # ... your existing environment variables ...
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITEHOST=YOUR-TAILSCALE-HOSTNAME  # e.g., homelab.nebelung-mercat.ts.net
+
+    # Add Traefik labels:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nextcloud.rule=Host(`YOUR-TAILSCALE-HOSTNAME`)"
+      - "traefik.http.routers.nextcloud.entrypoints=websecure"
+      - "traefik.http.routers.nextcloud.tls=true"
+      - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.nextcloud-headers.headers.stsSeconds=15552000"
+```
+
+2. **Add Traefik service** to the same file:
+
+```yaml
+  traefik:
+    image: traefik:v2.10
+    container_name: nextcloud-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--providers.file.directory=/certs"
+      - "--providers.file.watch=true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - nextcloud-network
+    depends_on:
+      - nextcloud-app
+```
+
+### Step 4: Update Nextcloud Trusted Domains
+
+```bash
+# Get your Tailscale hostname
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+echo "Adding Tailscale hostname to trusted domains: $TAILSCALE_HOSTNAME"
+
+# Check if hostname already exists in trusted domains
+EXISTING=$(docker exec -u www-data nextcloud-app php occ config:system:get trusted_domains 2>/dev/null | grep -c "^$TAILSCALE_HOSTNAME$" || true)
+
+if [ "$EXISTING" -eq 0 ]; then
+    # Find next available index
+    NEXT_INDEX=$(docker exec -u www-data nextcloud-app php occ config:system:get trusted_domains 2>/dev/null | wc -l)
+
+    # Add trusted domain
+    docker exec -u www-data nextcloud-app php occ config:system:set trusted_domains $NEXT_INDEX --value="$TAILSCALE_HOSTNAME"
+    echo "✅ Tailscale hostname added to trusted domains"
+else
+    echo "ℹ️  Tailscale hostname already in trusted domains, skipping"
+fi
+
+# Verify trusted domains
+echo ""
+echo "Current trusted domains:"
+docker exec -u www-data nextcloud-app php occ config:system:get trusted_domains
+
+echo ""
+echo "✅ Trusted domains configured"
+```
+
+### Step 5: Restart Nextcloud and Copy Certificates to Traefik
+
+```bash
+cd ~/docker-compose/nextcloud
+
+# Stop Nextcloud
+docker compose down
+
+# Start Nextcloud with new Traefik configuration
+docker compose up -d
+
+# Wait for containers to start
+echo "⏳ Waiting 30 seconds for containers to start..."
+sleep 30
+
+# Get Tailscale hostname
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+# Create /certs directory in Traefik container
+docker exec nextcloud-traefik mkdir -p /certs
+
+# Copy certificates into Traefik container
+docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt nextcloud-traefik:/certs/
+docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.key nextcloud-traefik:/certs/
+
+# Copy Traefik dynamic configuration
+docker cp ~/docker-compose/nextcloud/dynamic.yml nextcloud-traefik:/certs/
+
+# Set correct permissions inside container
+docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.crt
+docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.key
+docker exec nextcloud-traefik chmod 644 /certs/dynamic.yml
+
+# Verify files were copied
+echo "Verifying certificates in container:"
+docker exec nextcloud-traefik ls -la /certs/
+
+# Restart Traefik to load certificates
+echo "Restarting Traefik to load certificates..."
+docker compose restart traefik
+
+echo ""
+echo "✅ Migration complete!"
+```
+
+### Step 6: Test HTTPS Access
+
+```bash
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+echo "Testing HTTPS access..."
+echo ""
+
+# Test HTTPS
+HTTPS_STATUS=$(curl -s -k -o /dev/null -w "%{http_code}" https://$TAILSCALE_HOSTNAME)
+if [ "$HTTPS_STATUS" = "200" ] || [ "$HTTPS_STATUS" = "302" ]; then
+    echo "✅ HTTPS access working (HTTP $HTTPS_STATUS)"
+    echo "   Access your Nextcloud at: https://$TAILSCALE_HOSTNAME"
+else
+    echo "⚠️  HTTPS not responding (HTTP $HTTPS_STATUS)"
+    echo "   Check logs: docker compose logs nextcloud-app"
+fi
+
+# Test HTTP (should still work)
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
+    echo "✅ HTTP access still working (HTTP $HTTP_STATUS)"
+else
+    echo "⚠️  HTTP not responding (HTTP $HTTP_STATUS)"
+fi
+```
+
+### Step 7: Verify Certificate Information
+
+```bash
+# Check certificate details
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+echo "Certificate information:"
+openssl x509 -in ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt -noout -text | grep -E "(Subject:|Issuer:|Not Before|Not After)"
+
+echo ""
+echo "Certificate expiry:"
+openssl x509 -in ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt -noout -dates
+
+echo ""
+echo "Check Traefik logs for certificate loading:"
+docker compose logs traefik | grep -i cert
+```
+
+### Troubleshooting Migration Issues
+
+**Issue: Traefik using default certificate instead of Tailscale certificates**
+
+**Symptoms:**
+- Browser shows "TRAEFIK DEFAULT CERT" warning
+- HTTPS works but with invalid certificate
+
+**Solution:**
+```bash
+# Check if certificates were copied into container
+docker exec nextcloud-traefik ls -la /certs/
+
+# Check Traefik logs for configuration loading
+docker compose logs traefik | grep -i "configuration loaded"
+
+# If certificates are missing, copy them manually:
+TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+
+docker exec nextcloud-traefik mkdir -p /certs
+docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt nextcloud-traefik:/certs/
+docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.key nextcloud-traefik:/certs/
+docker cp ~/docker-compose/nextcloud/dynamic.yml nextcloud-traefik:/certs/
+
+# Fix permissions (use full filenames, not wildcards)
+docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.crt
+docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.key
+docker exec nextcloud-traefik chmod 644 /certs/dynamic.yml
+
+# Restart Traefik
+docker compose restart traefik
+```
+
+**Issue: Container won't start after migration**
+```bash
+# Check logs
+docker compose logs
+
+# Common issues:
+# 1. Syntax error in docker-compose.yml - verify YAML indentation
+# 2. Port conflict - check if another service is using ports 80/443
+# 3. Traefik labels incorrect - verify hostname matches certificate
+
+# Rollback if needed
+docker compose down
+mv docker-compose.yml.backup.YYYYMMDD_HHMMSS docker-compose.yml
+docker compose up -d
+```
+
+**Issue: HTTPS not working but HTTP works**
+```bash
+# Check if Traefik is running
+docker compose ps | grep traefik
+
+# Check Traefik logs for errors
+docker compose logs traefik
+
+# Check if certificates are readable in container
+docker exec nextcloud-traefik cat /certs/dynamic.yml
+
+# Verify Nextcloud labels are correct
+docker inspect nextcloud-app | grep -A 10 Labels
+```
+
+**Issue: Certificate errors in browser**
+```bash
+# Verify certificate hostname matches
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+openssl x509 -in ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt -noout -text | grep DNS
+
+# Make sure you're accessing via the exact Tailscale hostname
+echo "Access via: https://$TAILSCALE_HOSTNAME"
+
+# Also verify the Traefik labels match
+docker inspect nextcloud-app | grep "traefik.http.routers.nextcloud.rule"
+```
+
+**Issue: "Trusted domain" error after migration**
+```bash
+# Add your Tailscale hostname to trusted domains
+TAILSCALE_HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+if [ -z "$TAILSCALE_HOSTNAME" ] || [ "$TAILSCALE_HOSTNAME" = "null" ]; then
+    TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+fi
+
+# Check current trusted domains
+docker exec -u www-data nextcloud-app php occ config:system:get trusted_domains
+
+# Find next available index (count current domains)
+NEXT_INDEX=$(docker exec -u www-data nextcloud-app php occ config:system:get trusted_domains 2>/dev/null | wc -l)
+
+# Add if not already present
+docker exec -u www-data nextcloud-app php occ config:system:set trusted_domains $NEXT_INDEX --value="$TAILSCALE_HOSTNAME"
+
+# Verify
+docker exec -u www-data nextcloud-app php occ config:system:get trusted_domains
+```
+
+**Issue: Docker snap cannot access certificate files**
+```bash
+# On Ubuntu Core, Docker snap can only access files in home directory
+# Verify certificates are in the correct location:
+ls -la ~/docker-compose/nextcloud/certs/
+
+# If certificates are in /data/, move them to home directory:
+mkdir -p ~/docker-compose/nextcloud/certs
+sudo cp /data/docker/nextcloud/certs/* ~/docker-compose/nextcloud/certs/
+sudo chown $USER:$USER ~/docker-compose/nextcloud/certs/*
+chmod 644 ~/docker-compose/nextcloud/certs/*
+
+# Then copy into container using docker cp
+TAILSCALE_HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.crt nextcloud-traefik:/certs/
+docker cp ~/docker-compose/nextcloud/certs/$TAILSCALE_HOSTNAME.key nextcloud-traefik:/certs/
+docker cp ~/docker-compose/nextcloud/dynamic.yml nextcloud-traefik:/certs/
+docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.crt
+docker exec nextcloud-traefik chmod 644 /certs/$TAILSCALE_HOSTNAME.key
+docker compose restart traefik
 ```
 
 ---
@@ -950,5 +1494,6 @@ After completing this phase:
 
 ---
 
-**Phase 4 Complete!** ✅ 
+**Phase 4 Complete!** ✅
 Nextcloud is ready to provide web-based verification interface for photo consolidation.
+
