@@ -155,7 +155,6 @@ echo ""
 
 # Create Nextcloud directories in /data partition (permanent storage)
 echo "Creating Nextcloud directory structure..."
-sudo mkdir -p /data/docker/nextcloud/app
 sudo mkdir -p /data/docker/nextcloud/config
 sudo mkdir -p /data/docker/nextcloud/data
 sudo mkdir -p /data/docker/nextcloud/db
@@ -180,14 +179,12 @@ echo "ℹ️  Why: Nextcloud container runs as root for initialization,"
 echo "   but Apache runs as www-data (UID 33) and needs write access"
 echo ""
 
-sudo chown -R 33:33 /data/docker/nextcloud/app
 sudo chown -R 33:33 /data/docker/nextcloud/config
 sudo chown -R 33:33 /data/docker/nextcloud/data
 sudo chown -R 33:33 /data/nextcloud/files
 sudo chown -R 33:33 /data/photo-consolidation
 
 # Set proper permissions
-sudo chmod 755 /data/docker/nextcloud/app
 sudo chmod 755 /data/docker/nextcloud/config
 sudo chmod 770 /data/docker/nextcloud/data
 sudo chmod 755 /data/nextcloud/files
@@ -283,7 +280,6 @@ services:
       redis-nextcloud:
         condition: service_healthy
     volumes:
-      - /data/docker/nextcloud/app:/var/www/html
       - /data/docker/nextcloud/config:/var/www/html/config
       - /data/docker/nextcloud/data:/var/www/html/data
     environment:
@@ -341,9 +337,10 @@ echo ""
 echo "ℹ️  Configuration Notes:"
 echo "   - Container runs as root (needed for PHP/Apache initialization)"
 echo "   - Apache inside runs as www-data (UID 33)"
+echo "   - Only config and data directories are mounted (app stays in container)"
 echo "   - Mounted volumes owned by www-data on host (set earlier)"
-echo "   - SSL modules will be enabled automatically if certificates exist"
 echo "   - DO NOT add 'user: 33:33' - breaks initialization"
+echo "   - DO NOT mount /var/www/html - causes mount shadowing issues"
 echo ""
 echo "ℹ️  Access URLs:"
 echo "   Tailscale HTTPS: https://$TAILSCALE_HOSTNAME (after certificate setup)"
@@ -1052,11 +1049,11 @@ cd ~/docker-compose/nextcloud && docker compose ps
 
 echo ""
 echo "✅ Storage Locations (all in /data partition - permanent):"
-echo "   - App Data: /data/docker/nextcloud/app"
 echo "   - Config: /data/docker/nextcloud/config"
 echo "   - User Data: /data/docker/nextcloud/data"
 echo "   - Database: /data/docker/nextcloud/db"
 echo "   - Redis: /data/docker/nextcloud/redis"
+echo "   - App Files: Inside container (Nextcloud image)"
 echo ""
 echo "✅ User Files (read-write, permanent):"
 echo "   - Nextcloud Files: /data/nextcloud/files → admin/files"
