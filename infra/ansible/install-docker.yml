@@ -271,8 +271,8 @@
           - "Docker Installation Complete!"
           - "=============================================="
           - ""
-          - "✅ Docker Engine: {{ docker_version.stdout }}"
-          - "✅ Docker Compose: {{ compose_version.stdout }}"
+          - "✅ Docker Engine: {{ docker_version.stdout | default(docker_check.stdout) }}"
+          - "✅ Docker Compose: {{ compose_version.stdout | default('installed') }}"
           - "✅ User '{{ docker.user }}' added to docker group"
           - "✅ Docker daemon configured for /data access"
           - ""
@@ -286,3 +286,4 @@
           - ""
           - "=============================================="
       tags: [always]
+      when: docker_check.rc == 0

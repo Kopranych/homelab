@@ -1,0 +1,368 @@
+---
+# ==============================================================================
+# Nextcloud Undeployment Playbook
+# ==============================================================================
+# Purpose: Safely remove Nextcloud deployment and optionally Docker
+#
+# This playbook:
+# 1. Stops and removes Nextcloud containers
+# 2. Optionally removes Docker images
+# 3. Optionally removes data directories (with safety confirmation)
+# 4. Optionally uninstalls Docker completely
+#
+# Usage:
+#   # Remove containers only (keep data and Docker):
+#   ansible-playbook -i inventory/homelab undeploy-nextcloud.yml
+#
+#   # Remove containers and images:
+#   ansible-playbook -i inventory/homelab undeploy-nextcloud.yml -e "remove_images=true"
+#
+#   # Remove everything including data (DANGEROUS):
+#   ansible-playbook -i inventory/homelab undeploy-nextcloud.yml -e "remove_data=true remove_images=true"
+#
+#   # Remove Docker completely:
+#   ansible-playbook -i inventory/homelab undeploy-nextcloud.yml -e "remove_docker=true"
+#
+#   # Nuclear option - remove EVERYTHING:
+#   ansible-playbook -i inventory/homelab undeploy-nextcloud.yml -e "remove_data=true remove_images=true remove_docker=true"
+#
+# ==============================================================================
+
+- name: Undeploy Nextcloud Stack
+  hosts: homelab
+  become: true
+  gather_facts: true
+
+  vars:
+    # Safety flags - must be explicitly enabled
+    remove_images: false  # Remove Docker images
+    remove_data: false    # Remove data directories (DANGEROUS)
+    remove_docker: false  # Uninstall Docker completely
+
+    # Confirmation flag (set to true to skip prompts in CI/CD)
+    force: false
+
+  pre_tasks:
+    # ==========================================================================
+    # SAFETY CHECKS
+    # ==========================================================================
+
+    - name: Display undeployment configuration
+      debug:
+        msg: |
+          ==============================================
+          Nextcloud Undeployment Configuration
+          ==============================================
+
+          Actions to be performed:
+            ✅ Stop and remove containers: YES
+            {{ '✅' if remove_images else '❌' }} Remove Docker images: {{ 'YES' if remove_images else 'NO' }}
+            {{ '⚠️ ' if remove_data else '❌' }} Remove data directories: {{ 'YES (DANGEROUS!)' if remove_data else 'NO' }}
+            {{ '⚠️ ' if remove_docker else '❌' }} Uninstall Docker: {{ 'YES' if remove_docker else 'NO' }}
+
+          {% if remove_data %}
+          ⚠️  WARNING: Data removal is enabled!
+             This will DELETE all Nextcloud data including:
+             - User files and photos
+             - Database
+             - Configuration
+          {% endif %}
+
+          Press Ctrl+C within 10 seconds to cancel...
+
+    - name: Pause for safety confirmation
+      pause:
+        seconds: 10
+      when: not force and (remove_data or remove_docker)
+
+  tasks:
+    # ==========================================================================
+    # STOP CONTAINERS
+    # ==========================================================================
+
+    - name: Check if docker-compose.yml exists
+      stat:
+        path: "{{ nextcloud.compose_dir }}/docker-compose.yml"
+      register: compose_file
+      become: false
+
+    - name: Stop Nextcloud containers using docker compose
+      command: docker compose down
+      args:
+        chdir: "{{ nextcloud.compose_dir }}"
+      become: false
+      when: compose_file.stat.exists
+      register: compose_down
+      changed_when: true
+
+    - name: Display container removal result
+      debug:
+        msg: "✅ Nextcloud containers stopped and removed"
+      when: compose_down is changed
+
+    # ==========================================================================
+    # REMOVE CONTAINERS MANUALLY (FALLBACK)
+    # ==========================================================================
+
+    - name: Get list of Nextcloud containers
+      command: docker ps -a -q --filter "name=nextcloud" --filter "name=postgres-nextcloud" --filter "name=redis-nextcloud"
+      register: nextcloud_containers
+      changed_when: false
+      failed_when: false
+
+    - name: Stop and remove Nextcloud containers manually
+      command: docker rm -f {{ item }}
+      loop: "{{ nextcloud_containers.stdout_lines }}"
+      when: nextcloud_containers.stdout_lines | length > 0
+      ignore_errors: true
+
+    - name: Verify containers are removed
+      command: docker ps -a --filter "name=nextcloud" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: remaining_containers
+      changed_when: false
+
+    - name: Display container cleanup status
+      debug:
+        msg: |
+          {% if remaining_containers.stdout_lines | length == 0 %}
+          ✅ All Nextcloud containers removed successfully
+          {% else %}
+          ⚠️  Some containers still exist: {{ remaining_containers.stdout_lines | join(', ') }}
+          {% endif %}
+
+    # ==========================================================================
+    # REMOVE DOCKER IMAGES (OPTIONAL)
+    # ==========================================================================
+
+    - name: Remove Docker images
+      when: remove_images
+      block:
+        - name: Get Nextcloud related images
+          shell: docker images --format "{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}" | grep -E "(nextcloud|postgres|redis|traefik)" || true
+          register: nextcloud_images
+          changed_when: false
+
+        - name: Display images to be removed
+          debug:
+            msg:
+              - "Images to be removed:"
+              - "{{ nextcloud_images.stdout_lines }}"
+          when: nextcloud_images.stdout_lines | length > 0
+
+        - name: Remove Nextcloud Docker images
+          command: docker rmi {{ item }}
+          loop: "{{ nextcloud_images.stdout_lines }}"
+          when: nextcloud_images.stdout_lines | length > 0
+          ignore_errors: true
+
+        - name: Display image removal status
+          debug:
+            msg: "✅ Docker images removed"
+
+    # ==========================================================================
+    # REMOVE DOCKER NETWORKS (CLEANUP)
+    # ==========================================================================
+
+    - name: Remove Nextcloud network
+      command: docker network rm nextcloud_nextcloud-network
+      register: network_removal
+      failed_when: false
+      changed_when: network_removal.rc == 0
+
+    - name: Prune unused Docker networks
+      command: docker network prune -f
+      changed_when: true
+
+    # ==========================================================================
+    # REMOVE DATA DIRECTORIES (OPTIONAL - DANGEROUS)
+    # ==========================================================================
+
+    - name: Remove data directories
+      when: remove_data
+      block:
+        - name: Final confirmation for data removal
+          pause:
+            prompt: |
+              ⚠️  ⚠️  ⚠️  FINAL WARNING ⚠️  ⚠️  ⚠️
+
+              You are about to DELETE ALL Nextcloud data!
+
+              This includes:
+              - {{ nextcloud.data_root }}
+              - {{ nextcloud.user_files }}
+              - {{ nextcloud.photo_consolidation }}
+
+              This action CANNOT be undone!
+
+              Type 'DELETE ALL DATA' to confirm (or Ctrl+C to cancel):
+          register: final_confirmation
+          when: not force
+
+        - name: Verify confirmation
+          fail:
+            msg: "Data removal cancelled - incorrect confirmation"
+          when: not force and final_confirmation.user_input != 'DELETE ALL DATA'
+
+        - name: Backup directory list before deletion
+          shell: |
+            echo "Directories to be deleted on $(date):" > /tmp/nextcloud_removal_log.txt
+            ls -lah {{ nextcloud.data_root }} >> /tmp/nextcloud_removal_log.txt 2>&1 || true
+            ls -lah {{ nextcloud.user_files }} >> /tmp/nextcloud_removal_log.txt 2>&1 || true
+            ls -lah {{ nextcloud.photo_consolidation }} >> /tmp/nextcloud_removal_log.txt 2>&1 || true
+          changed_when: true
+
+        - name: Remove Nextcloud data directories
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ nextcloud.data_root }}"
+            - "{{ nextcloud.user_files }}"
+            - "{{ nextcloud.photo_consolidation }}"
+
+        - name: Remove docker-compose directory
+          file:
+            path: "{{ nextcloud.compose_dir }}"
+            state: absent
+          become: false
+
+        - name: Display data removal confirmation
+          debug:
+            msg:
+              - "✅ All Nextcloud data removed"
+              - "📝 Removal log saved to /tmp/nextcloud_removal_log.txt"
+
+    - name: Keep data message
+      debug:
+        msg:
+          - "ℹ️  Data directories preserved at:"
+          - "   - {{ nextcloud.data_root }}"
+          - "   - {{ nextcloud.user_files }}"
+          - "   - {{ nextcloud.photo_consolidation }}"
+          - ""
+          - "To remove data, run with: -e remove_data=true"
+      when: not remove_data
+
+    # ==========================================================================
+    # UNINSTALL DOCKER (OPTIONAL)
+    # ==========================================================================
+
+    - name: Uninstall Docker
+      when: remove_docker
+      block:
+        - name: Stop Docker service
+          systemd:
+            name: docker
+            state: stopped
+          failed_when: false
+
+        - name: Remove Docker packages
+          apt:
+            name: "{{ docker.packages }}"
+            state: absent
+            purge: true
+
+        - name: Remove Docker repository
+          apt_repository:
+            repo: "deb [arch={{ ansible_architecture }} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: absent
+
+        - name: Remove Docker GPG key
+          file:
+            path: /usr/share/keyrings/docker-archive-keyring.gpg
+            state: absent
+
+        - name: Remove Docker configuration
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/docker
+            - /var/lib/docker
+            - /var/lib/containerd
+
+        - name: Remove user from docker group
+          user:
+            name: "{{ docker.user }}"
+            groups: docker
+            append: false
+          failed_when: false
+
+        - name: Remove docker group
+          group:
+            name: docker
+            state: absent
+          failed_when: false
+
+        - name: Display Docker removal status
+          debug:
+            msg: "✅ Docker completely removed"
+
+    # ==========================================================================
+    # CLEANUP
+    # ==========================================================================
+
+    - name: Run apt autoremove
+      apt:
+        autoremove: true
+      when: remove_docker
+
+    - name: Run apt autoclean
+      apt:
+        autoclean: true
+      when: remove_docker
+
+    # ==========================================================================
+    # VERIFICATION
+    # ==========================================================================
+
+    - name: Check for remaining Nextcloud processes
+      shell: ps aux | grep -i nextcloud | grep -v grep || true
+      register: remaining_processes
+      changed_when: false
+
+    - name: Check for remaining Docker containers
+      command: docker ps -a
+      register: docker_ps
+      changed_when: false
+      failed_when: false
+
+    # ==========================================================================
+    # DISPLAY SUMMARY
+    # ==========================================================================
+
+    - name: Display undeployment summary
+      debug:
+        msg: |
+          ==============================================
+          ✅ Nextcloud Undeployment Complete
+          ==============================================
+
+          Actions completed:
+            ✅ Containers stopped and removed
+            {{ '✅' if remove_images else '➖' }} Docker images: {{ 'Removed' if remove_images else 'Kept' }}
+            {{ '✅' if remove_data else '➖' }} Data directories: {{ 'Removed' if remove_data else 'Kept' }}
+            {{ '✅' if remove_docker else '➖' }} Docker: {{ 'Uninstalled' if remove_docker else 'Kept' }}
+
+          {% if not remove_data %}
+          📁 Data locations (still exist):
+             - {{ nextcloud.data_root }}
+             - {{ nextcloud.user_files }}
+             - {{ nextcloud.photo_consolidation }}
+
+          To remove data: ansible-playbook undeploy-nextcloud.yml -e remove_data=true
+          {% endif %}
+
+          {% if not remove_docker and docker_ps.rc == 0 %}
+          🐳 Docker is still installed
+             To remove Docker: ansible-playbook undeploy-nextcloud.yml -e remove_docker=true
+          {% endif %}
+
+          {% if remaining_processes.stdout_lines | length > 0 %}
+          ⚠️  Some processes may still be running:
+          {{ remaining_processes.stdout_lines | join('\n') }}
+          {% else %}
+          ✅ No remaining Nextcloud processes detected
+          {% endif %}
+
+          ==============================================
