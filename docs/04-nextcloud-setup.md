@@ -291,7 +291,7 @@ services:
       - REDIS_HOST_PASSWORD=redis_pass_2024
       - NEXTCLOUD_ADMIN_PASSWORD=admin_pass_2024
       - NEXTCLOUD_ADMIN_USER=admin
-      - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.8.107 homelab homelab.nebelung-mercat.ts.net 100.65.45.18
+      - NEXTCLOUD_TRUSTED_DOMAINS=localhost 192.168.0.6 homelab homelab.nebelung-mercat.ts.net 100.65.45.18
       - OVERWRITEPROTOCOL=https
       - OVERWRITEHOST=homelab.nebelung-mercat.ts.net
     labels:
@@ -573,62 +573,6 @@ docker compose exec -u www-data nextcloud-app php occ db:convert-filecache-bigin
 docker compose exec -u www-data nextcloud-app php occ files:scan --all
 
 echo "✅ Nextcloud post-installation configuration completed"
-```
-
----
-
-## 📋 Create Verification Guide
-
-```bash
-# Create verification guide that will be accessible via Nextcloud
-cat > /data/VERIFICATION_GUIDE.md << 'EOF'
-# Photo Consolidation Verification Guide
-
-## 🎯 Purpose
-This Nextcloud interface allows you to visually verify your photos before and after consolidation.
-
-## 📁 Folder Structure
-
-### `verification/incoming/`
-- Contains all photos copied from your old drives
-- Organized by source drive (sdb1/, sdc1/, etc.)
-- **READ-ONLY** - These are your working copies
-
-### `verification/duplicates/`
-- Contains analysis reports showing duplicate groups
-- Each group shows files ranked by quality
-- Review these to understand which files will be kept/removed
-
-### `verification/final/`
-- Will contain your final consolidated collection
-- Only appears after Phase 6 (Photo Consolidation) completes
-- This is your clean, deduplicated photo library
-
-### `verification/logs/`
-- Contains detailed logs of the consolidation process
-- Shows file counts, sizes, and operation summaries
-
-## ✅ Verification Checklist
-
-Before approving consolidation:
-- [ ] Browse `incoming/` folders to confirm important photos are present
-- [ ] Check folder organization makes sense for your needs
-- [ ] Review duplicate analysis reports
-- [ ] Verify RAW files are ranked higher than JPEG versions
-- [ ] Confirm organized folders preferred over backup locations
-- [ ] Check that file counts seem reasonable
-
-## 🚨 Safety Reminders
-- Original drives are NEVER modified during this process
-- All work is performed on copies in `/data/incoming/`
-- You can restart the process safely at any time
-- This interface is for verification only - no modifications possible
-
-## 📞 Need Help?
-Check the logs in `verification/logs/` for detailed information about each phase.
-EOF
-
-echo "✅ Verification guide created"
 ```
 
 ---

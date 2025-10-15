@@ -1,0 +1,127 @@
+---
+# ==============================================================================
+# Nextcloud Main Orchestration Playbook
+# ==============================================================================
+# Purpose: Main entry point for all Nextcloud operations
+#
+# This playbook orchestrates:
+# 1. Docker installation (if needed)
+# 2. Nextcloud deployment with HTTPS
+# 3. Post-installation configuration
+#
+# Usage:
+#   # Full installation (Docker + Nextcloud):
+#   ansible-playbook -i inventory/homelab nextcloud.yml
+#
+#   # Deploy only (skip Docker if already installed):
+#   ansible-playbook -i inventory/homelab nextcloud.yml --skip-tags docker
+#
+#   # Skip HTTPS setup:
+#   ansible-playbook -i inventory/homelab nextcloud.yml -e "nextcloud_https_enabled=false"
+#
+#   # Undeploy everything:
+#   ansible-playbook -i inventory/homelab nextcloud.yml -e "operation=undeploy"
+#
+#   # Undeploy with data removal (DANGEROUS):
+#   ansible-playbook -i inventory/homelab nextcloud.yml -e "operation=undeploy remove_data=true"
+#
+# ==============================================================================
+
+- name: Nextcloud Orchestration
+  hosts: homelab
+  gather_facts: true
+
+  pre_tasks:
+    - name: Display operation mode
+      debug:
+        msg: |
+          ==============================================
+          Nextcloud Orchestration
+          ==============================================
+
+          Operation: {{ operation | default('deploy') | upper }}
+          Target: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+
+          {% if operation | default('deploy') == 'deploy' %}
+          This will:
+            1. Install Docker (if not present)
+            2. Deploy Nextcloud with PostgreSQL and Redis
+            3. Configure Traefik reverse proxy
+            4. Set up HTTPS with Tailscale (if available)
+            5. Configure Nextcloud optimizations
+          {% elif operation | default('deploy') == 'undeploy' %}
+          This will:
+            1. Stop and remove all Nextcloud containers
+            2. Optionally remove Docker images
+            3. Optionally remove data directories
+            4. Optionally uninstall Docker
+          {% endif %}
+
+          ==============================================
+
+    - name: Validate operation
+      fail:
+        msg: "Invalid operation: {{ operation | default('deploy') }}. Must be 'deploy' or 'undeploy'"
+      when: operation is defined and operation not in ['deploy', 'undeploy']
+
+# ==============================================================================
+# DEPLOYMENT OPERATIONS
+# ==============================================================================
+
+- name: Install Docker
+  import_playbook: install-docker.yml
+  when: operation | default('deploy') == 'deploy'
+  tags: [docker]
+
+- name: Deploy Nextcloud
+  import_playbook: deploy-nextcloud.yml
+  when: operation | default('deploy') == 'deploy'
+  tags: [nextcloud]
+
+# ==============================================================================
+# UNDEPLOYMENT OPERATIONS
+# ==============================================================================
+
+- name: Undeploy Nextcloud
+  import_playbook: undeploy-nextcloud.yml
+  when: operation | default('deploy') == 'undeploy'
+  tags: [undeploy]
+
+# ==============================================================================
+# FINAL STATUS
+# ==============================================================================
+
+- name: Display final status
+  hosts: homelab
+  gather_facts: false
+  tasks:
+    - name: Display completion message
+      debug:
+        msg: |
+          ==============================================
+          ✅ {{ operation | default('deploy') | upper }} Operation Complete!
+          ==============================================
+
+          {% if operation | default('deploy') == 'deploy' %}
+          📝 Next Steps:
+             1. Access Nextcloud via browser
+             2. Log in with default credentials
+             3. Change default passwords
+             4. Configure Nextcloud settings
+
+          📱 Mobile App Setup:
+             1. Install Tailscale on phone
+             2. Install Nextcloud app
+             3. Connect using Tailscale hostname
+
+          📚 Documentation:
+             See docs/04-nextcloud-setup.md for details
+          {% elif operation | default('deploy') == 'undeploy' %}
+          ✅ Nextcloud has been removed
+
+          To reinstall:
+             ansible-playbook -i inventory/homelab nextcloud.yml
+          {% endif %}
+
+          ==============================================
