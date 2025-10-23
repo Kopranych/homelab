@@ -249,10 +249,34 @@ Space savings: 11.3MB
 
 ### **Common Verification Questions**
 - ✅ Are RAW files ranked higher than JPEG versions?
-- ✅ Are organized folders preferred over backup locations?  
+- ✅ Are organized folders preferred over backup locations?
 - ✅ Do large files rank higher than small versions?
 - ✅ Are important family photos preserved?
 - ✅ Does the duplicate percentage seem reasonable?
+
+### **Refreshing Nextcloud File Index**
+
+If you add files manually on the server or they don't appear in the web interface, scan them with Nextcloud's indexer:
+
+```bash
+# Navigate to Nextcloud docker-compose directory
+cd ~/docker-compose/nextcloud
+
+# Scan all files for all users
+docker compose exec -u www-data nextcloud-app php occ files:scan --all
+
+# Scan files for specific user (faster)
+docker compose exec -u www-data nextcloud-app php occ files:scan admin
+
+# Scan with verbose output to see progress
+docker compose exec -u www-data nextcloud-app php occ files:scan --all -v
+```
+
+**Common scenarios requiring file scan**:
+- After photo consolidation completes and creates new files
+- When manually copying files to Nextcloud data directory
+- If files appear on disk but not in web interface
+- After mounting external storage directories
 
 ---
 
