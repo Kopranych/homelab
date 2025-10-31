@@ -222,10 +222,28 @@ cat ~/id_ed25519.pub >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 chmod 700 ~/.ssh
 rm ~/id_ed25519.pub
+```
 
-# Test passwordless login
+### Configure SSH Server (Important!)
+```bash
+# On the server, ensure SSH accepts key authentication
+sudo sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Restart SSH service to apply changes
+sudo systemctl restart ssh
+
+# Verify SSH config
+sudo sshd -T | grep -i pubkey  # Should show "pubkeyauthentication yes"
+```
+
+### Test Passwordless Login
+```bash
+# Exit from server
 exit
-ssh your-username@100.64.15.42  # Should not ask for password
+
+# Test passwordless login from Windows PC
+ssh your-username@100.64.15.42  # Should NOT ask for password now
 ```
 
 ## 📱 Install Tailscale on Your Phone (Bonus)

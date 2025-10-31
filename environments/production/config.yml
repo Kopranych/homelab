@@ -1,0 +1,89 @@
+---
+# Production Environment Configuration Overrides
+# These settings override the main config.yml for production
+
+# Production photo consolidation settings
+photo_consolidation:
+  process:
+    dry_run: false             # Allow actual operations in production
+    parallel_jobs: 8           # Full CPU utilization
+    preserve_structure: true
+    
+  safety:
+    max_duplicate_percentage: 70   # Stricter duplicate checking
+    min_free_space_gb: 200        # More conservative space requirements
+    backup_before_removal: true    # Always backup in production
+    verification_samples: 100      # More verification samples
+
+# Production services - all enabled
+services:
+  core:
+    tailscale:
+      enabled: true
+      
+    reverse_proxy:
+      enabled: true
+      
+    monitoring:
+      prometheus:
+        enabled: true
+        data_retention: "90d"  # Longer retention in production
+      grafana:
+        enabled: true
+        
+  photo_management:
+    immich:
+      enabled: true
+      upload_location: "/data/photos/immich"
+      
+  development:
+    java:
+      versions: ["17", "21"]  # Only LTS versions in production
+    python:
+      versions: ["3.11"]      # Single stable version
+
+# Production backup settings
+backup:
+  schedule:
+    photos: "daily"
+    configs: "daily"
+    databases: "daily"
+    system: "weekly"
+    
+  destinations:
+    local: "/data/backup"
+    external: "/mnt/backup-drive"
+    # Uncomment when cloud backup is configured:
+    # cloud: "s3://homelab-backup-prod"
+    
+  retention:
+    daily: "30d"    # Longer retention in production
+    weekly: "12w"
+    monthly: "24m"
+    yearly: "10y"
+
+# Production logging
+logging:
+  default_level: "INFO"
+  rotation:
+    max_size: "100M"
+    max_files: 20     # More log files in production
+    compress: true
+
+# Production network security
+network:
+  firewall:
+    ssh_port: 22
+    fail2ban_enabled: true
+    allowed_ports:
+      - 80
+      - 443
+      - 2283  # Immich
+      
+# Production monitoring alerts
+monitoring:
+  alerts:
+    disk_usage_threshold: 85
+    memory_usage_threshold: 90
+    photo_consolidation_failures: true
+    backup_failures: true

@@ -1,11 +1,12 @@
-# Step 7: Storage Setup - Configure Development and Backup Drives
+# Phase 6: Storage Setup - Configure Development and Backup Drives
 
 ## 🎯 Goal
 Configure the 512GB SSD and 1TB external drive for development, databases, and backups after photo consolidation is complete.
 
 ## ⚠️ Prerequisites
-- Ubuntu Server installed (Step 2)
-- Photos successfully consolidated to `/mnt/photos` (Step 6)
+- Ubuntu Server installed (Phase 2) ✅
+- Nextcloud installed (Phase 4) ✅
+- Photos successfully consolidated to `/data/final/` (Phase 5) ✅
 - Old drives ready for reformatting
 
 ---
@@ -41,9 +42,9 @@ ls -la /mnt/check_disk2
 **CRITICAL: Only proceed after verifying photos are safely copied!**
 
 ```bash
-# Verify photos are in /mnt/photos
-ls -la /mnt/photos/
-du -sh /mnt/photos/*
+# Verify photos are in /data/final
+ls -la /data/final/
+du -sh /data/final/*
 
 # Check photo count comparison
 echo "Photos on old disk1:"
@@ -53,7 +54,7 @@ echo "Photos on old disk2:"
 find /mnt/check_disk2 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.raw" -o -iname "*.cr2" -o -iname "*.nef" \) | wc -l
 
 echo "Photos in new location:"
-find /mnt/photos -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.raw" -o -iname "*.cr2" -o -iname "*.nef" \) | wc -l
+find /data/final -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.raw" -o -iname "*.cr2" -o -iname "*.nef" \) | wc -l
 
 # ONLY CONTINUE IF PHOTO COUNTS MATCH OR YOU'RE SATISFIED WITH BACKUP
 ```
@@ -266,7 +267,7 @@ nvme0n1 (1TB NVMe):
 ├─nvme0n1p2    1G  /boot  
 ├─nvme0n1p3   50G  / 
 ├─nvme0n1p4   50G  /home
-├─nvme0n1p5  800G  /mnt/photos
+├─nvme0n1p5  800G  /data
 └─nvme0n1p6   16G  [SWAP]
 
 sdb (512GB SSD):
@@ -395,7 +396,7 @@ echo ""
 echo "✅ 1TB NVMe already configured:"
 echo "   - / (50GB) - Ubuntu system"
 echo "   - /home (50GB) - User configurations" 
-echo "   - /mnt/photos (800GB) - Organized photo storage"
+echo "   - /data (800GB) - Photos, services, and development data"
 echo ""
 echo "🔧 Ready for:"
 echo "   - Docker installation and containers"
@@ -450,6 +451,6 @@ echo "Created backup check script: ~/check_backups.sh"
 2. **Set up development environments** for Java/Python in `/mnt/projects`
 3. **Install databases** with data storage on `/mnt/databases` 
 4. **Configure backup scripts** to use `/mnt/backup`
-5. **Set up photo management tools** for `/mnt/photos`
+5. **Set up photo management tools** for `/data/final/`
 
 Your storage setup is now complete and optimized for your home lab server!

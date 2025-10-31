@@ -1,0 +1,318 @@
+---
+# Main Homelab Configuration
+# Central configuration for all homelab components and services
+
+# ====================
+# INFRASTRUCTURE
+# ====================
+infrastructure:
+  # Server Details
+  server:
+    hostname: "homelab-server"
+    # Network configuration
+    network:
+      local_ip: "192.168.1.100"
+      tailscale_ip: "100.x.x.x"  # Replace with your actual Tailscale IP
+      domain: "homelab.local"
+    
+    # Hardware specifications  
+    hardware:
+      cpu_cores: 8
+      memory_gb: 16
+      primary_storage: "/dev/nvme0n1"
+      data_partition: "/data"
+    
+    # User configuration
+    users:
+      primary_user: "homelab"
+      ansible_user: "homelab"
+
+  # Storage Configuration
+  storage:
+    # Main data directory
+    data_root: "/data"
+    
+    # Partition layout
+    partitions:
+      boot: "/boot"        # 1GB
+      root: "/"           # 50GB  
+      home: "/home"       # 20GB
+      data: "/data"       # 911GB
+      swap: "swap"        # 16GB
+    
+    # Source drives for photo consolidation
+    source_drives:
+      - path: "/media/sdb1"
+        label: "old-ssd-1"
+        size: "512GB"
+        filesystem: "ntfs"  # Windows formatted
+      - path: "/media/sdc1"
+        label: "old-external-1"
+        size: "1TB"
+        filesystem: "ntfs"  # Windows formatted
+
+# ====================
+# SERVICES & APPLICATIONS
+# ====================
+services:
+  # Core Infrastructure Services
+  core:
+    tailscale:
+      enabled: true
+      exit_node: false
+      
+    reverse_proxy:
+      type: "traefik"
+      enabled: true
+      ports:
+        http: 80
+        https: 443
+        dashboard: 8080
+      
+    monitoring:
+      prometheus:
+        enabled: true
+        port: 9090
+        data_retention: "30d"
+      grafana:
+        enabled: true
+        port: 3000
+        admin_password: "{{ vault_grafana_password }}"
+  
+  # Photo Management
+  photo_management:
+    immich:
+      enabled: true
+      port: 2283
+      upload_location: "/data/photos/immich"
+      database: "postgresql"
+    
+    # Photo consolidation settings
+    consolidation:
+      source_drives: "{{ infrastructure.storage.source_drives }}"
+      target_directory: "/data/photos/consolidated"
+      backup_directory: "/data/backup/photos"
+      
+  # Development Environment
+  development:
+    # Java Development
+    java:
+      versions: ["11", "17", "21"]
+      default_version: "17"
+      maven_version: "3.9.x"
+      gradle_version: "8.x"
+      
+    # Python Development  
+    python:
+      versions: ["3.9", "3.10", "3.11"]
+      default_version: "3.11"
+      pip_packages:
+        - "fastapi"
+        - "django"
+        - "flask"
+        - "pandas"
+        - "numpy"
+        
+    # Development Services
+    services:
+      postgresql:
+        enabled: true
+        port: 5432
+        databases:
+          - "dev_db"
+          - "test_db"
+      redis:
+        enabled: true
+        port: 6379
+      nginx:
+        enabled: true
+        port: 8080
+
+# ====================
+# PHOTO CONSOLIDATION
+# ====================
+photo_consolidation:
+  # Process Configuration
+  process:
+    dry_run: true  # Always start with dry run
+    preserve_structure: true
+    parallel_jobs: 4
+    
+  # Quality Analysis Settings
+  quality:
+    # File format priorities (higher = better)
+    format_scores:
+      raw_files: 90      # CR2, NEF, ARW, etc.
+      high_res_jpg: 75   # Large JPEG files
+      standard_jpg: 60   # Regular JPEG
+      png: 65
+      heic: 70
+      videos_4k: 85
+      videos_hd: 70
+      videos_sd: 50
+      
+    # Size thresholds
+    size_thresholds:
+      photo_large_mb: 5    # Photos > 5MB get bonus
+      video_large_mb: 100  # Videos > 100MB get bonus
+      
+    # Folder context scoring
+    folder_bonuses:
+      organized: 10        # /2023/, /Photos/, /Videos/
+      meaningful: 5        # /Vacation/, /Wedding/
+      neutral: 0           # Most folders
+      backup: -10          # /Backup/, /Old/
+      junk: -15           # /Downloads/, /Temp/
+  
+  # Safety Settings
+  safety:
+    max_duplicate_percentage: 80  # Alert if >80% duplicates
+    min_free_space_gb: 100       # Minimum space to maintain
+    backup_before_removal: false  # Optional backup (originals are already safe)
+    verification_samples: 50      # Random files to verify
+    
+  # File Extensions
+  extensions:
+    photos: 
+      - jpg
+      - jpeg  
+      - png
+      - heic
+      - heif
+      - gif
+      - bmp
+      - tiff
+      - tif
+      - webp
+      - cr2  # Canon RAW
+      - nef  # Nikon RAW
+      - arw  # Sony RAW
+      - dng  # Adobe RAW
+      - raf  # Fujifilm RAW
+      - orf  # Olympus RAW
+      - rw2  # Panasonic RAW
+      - pef  # Pentax RAW
+      - srw  # Samsung RAW
+      - x3f  # Sigma RAW
+      
+    videos:
+      - mp4
+      - mov
+      - avi
+      - mkv
+      - wmv
+      - m4v
+      - 3gp
+      - mts
+      - m2ts
+      - flv
+      - webm
+      - mpg
+      - mpeg
+      - m2v
+      - vob
+      - ts
+      - asf
+      - rm
+      - rmvb
+      - ogv
+      - divx
+      - xvid
+
+# ====================
+# NETWORK & SECURITY
+# ====================
+network:
+  # Tailscale Configuration
+  tailscale:
+    tailnet: "your-tailnet.ts.net"
+    key_expiry: "90d"
+    advertise_routes: ["192.168.1.0/24"]
+    
+  # Firewall Rules  
+  firewall:
+    ssh_port: 22
+    allowed_ports:
+      - 80    # HTTP
+      - 443   # HTTPS
+      - 2283  # Immich
+      - 3000  # Grafana
+      - 8080  # Development
+      - 9090  # Prometheus
+      
+  # SSL/TLS
+  ssl:
+    acme_email: "admin@homelab.local"
+    provider: "letsencrypt"
+
+# ====================
+# BACKUP & MAINTENANCE
+# ====================
+backup:
+  # Backup Schedule
+  schedule:
+    photos: "daily"
+    configs: "weekly"
+    databases: "daily"
+    system: "weekly"
+    
+  # Backup Destinations
+  destinations:
+    local: "/data/backup"
+    external: "/mnt/backup-drive"
+    cloud: "s3://homelab-backup"  # Optional
+    
+  # Retention Policies
+  retention:
+    daily: "7d"
+    weekly: "4w"
+    monthly: "12m"
+    yearly: "5y"
+
+# ====================
+# LOGGING & MONITORING
+# ====================
+logging:
+  # Log Levels
+  default_level: "INFO"
+  components:
+    ansible: "INFO"
+    photo_consolidation: "INFO"
+    services: "WARN"
+    
+  # Log Locations
+  paths:
+    system: "/var/log/homelab"
+    applications: "/data/logs"
+    consolidation: "/data/logs/photo-consolidation"
+    
+  # Log Rotation
+  rotation:
+    max_size: "100M"
+    max_files: 10
+    compress: true
+
+# ====================
+# ENVIRONMENT OVERRIDES
+# ====================
+environments:
+  development:
+    photo_consolidation:
+      process:
+        dry_run: true
+        parallel_jobs: 2
+    services:
+      core:
+        monitoring:
+          prometheus:
+            enabled: false
+            
+  production:
+    photo_consolidation:
+      process:
+        dry_run: false
+        parallel_jobs: 8
+    backup:
+      schedule:
+        photos: "daily"
+        configs: "daily"

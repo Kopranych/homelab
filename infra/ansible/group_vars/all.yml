@@ -1,0 +1,40 @@
+---
+# Ansible Global Configuration - References Main Homelab Config
+# This file loads configuration from the main config.yml
+
+# Load main configuration
+homelab_config_file: "{{ playbook_dir }}/../../config.yml"
+homelab_environment: "{{ ansible_environment | default('production') }}"
+
+# Infrastructure settings (loaded from main config)
+homelab_hostname: "{{ (lookup('file', homelab_config_file) | from_yaml).infrastructure.server.hostname }}"
+homelab_data_root: "{{ (lookup('file', homelab_config_file) | from_yaml).infrastructure.storage.data_root }}"
+
+# Photo consolidation settings (loaded from main config)
+photo_consolidation: "{{ (lookup('file', homelab_config_file) | from_yaml).photo_consolidation }}"
+
+# Source drives from main config
+source_drives: "{{ (lookup('file', homelab_config_file) | from_yaml).infrastructure.storage.source_drives | map(attribute='path') | list }}"
+
+# Target location 
+target_base: "{{ homelab_data_root }}"
+
+# Media extensions from main config
+media_extensions:
+  photos: "{{ photo_consolidation.extensions.photos | join(',') }}"
+  videos: "{{ photo_consolidation.extensions.videos | join(',') }}"
+
+# Process control from main config
+dry_run: "{{ photo_consolidation.process.dry_run }}"
+preserve_structure: "{{ photo_consolidation.process.preserve_structure }}"
+parallel_jobs: "{{ photo_consolidation.process.parallel_jobs }}"
+
+# Safety settings from main config
+max_duplicate_percentage: "{{ photo_consolidation.safety.max_duplicate_percentage }}"
+min_free_space_gb: "{{ photo_consolidation.safety.min_free_space_gb }}"
+
+# Services configuration
+services_config: "{{ (lookup('file', homelab_config_file) | from_yaml).services }}"
+
+# Network configuration  
+network_config: "{{ (lookup('file', homelab_config_file) | from_yaml).network }}"

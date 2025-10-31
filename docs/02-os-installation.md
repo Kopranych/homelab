@@ -199,7 +199,32 @@ free -h
 ip addr show
 ```
 
-### 4. Update System
+### 4. Verify Sudo Access
+
+Your user should have sudo access from installation, but verify:
+
+```bash
+# Test sudo access
+sudo whoami
+# Should output: root
+
+# If you get "user is not in the sudoers file", add your user to sudo group:
+# You'll need to login as root or use recovery mode for this
+
+# Login as root (if available) or use recovery mode, then:
+usermod -aG sudo your-username
+
+# Verify user is in sudo group:
+groups your-username
+# Should show: your-username : your-username sudo
+
+# Logout and login again for changes to take effect
+exit
+```
+
+**Note**: During Ubuntu Server installation, the first user created automatically gets sudo privileges. You only need this if sudo doesn't work.
+
+### 5. Update System
 ```bash
 # Update package lists
 sudo apt update
@@ -257,12 +282,33 @@ hostname -I
 ```
 
 ### Test Local SSH (Optional)
-```bash
-# From another device on your home network (Windows PC, phone on same WiFi):
-ssh your-username@192.168.1.XXX  # Replace XXX with actual IP
 
-# This works locally but NOT from internet yet
-# Tailscale in Step 3 will enable internet access
+#### Option 1: Using IP Address (Works immediately)
+```powershell
+# From Windows PC on your home network:
+ssh your-username@192.168.1.XXX  # Replace XXX with actual IP
+```
+
+#### Option 2: Using Hostname (Easier to remember)
+```powershell
+# From Windows PC on your home network:
+ssh your-username@homelab-server.local
+
+# Or just the hostname (depends on your router):
+ssh your-username@homelab-server
+```
+
+**Making hostname work on Windows:**
+```powershell
+# If hostname doesn't resolve, add to Windows hosts file:
+# 1. Open PowerShell as Administrator
+# 2. Edit hosts file:
+notepad C:\Windows\System32\drivers\etc\hosts
+
+# 3. Add this line (replace with your actual IP):
+192.168.1.XXX    homelab-server homelab-server.local
+
+# 4. Save and try SSH again with hostname
 ```
 
 **Important**: This SSH only works from devices on your home network. Internet access requires Tailscale (Step 3).
