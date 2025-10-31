@@ -1,0 +1,289 @@
+---
+# ==============================================================================
+# Docker Installation Playbook
+# ==============================================================================
+# Purpose: Install Docker Engine and Docker Compose plugin on Ubuntu Server
+#
+# This playbook addresses the mounting issues by:
+# 1. Properly configuring Docker daemon for /data directory access
+# 2. Setting up correct user permissions
+# 3. Installing Docker with all required plugins
+#
+# Usage:
+#   ansible-playbook -i inventory/homelab install-docker.yml
+#
+# Skip if Docker is already installed:
+#   ansible-playbook -i inventory/homelab install-docker.yml --skip-tags docker
+# ==============================================================================
+
+- name: Install Docker Engine
+  hosts: homelab
+  become: true
+  gather_facts: true
+
+  vars:
+    docker_gpg_key_url: "https://download.docker.com/linux/ubuntu/gpg"
+    docker_gpg_key_path: "/usr/share/keyrings/docker-archive-keyring.gpg"
+
+  handlers:
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+        daemon_reload: true
+
+  tasks:
+    # ==========================================================================
+    # PRE-FLIGHT CHECKS
+    # ==========================================================================
+
+    - name: Check if Docker is already installed
+      command: docker --version
+      register: docker_check
+      failed_when: false
+      changed_when: false
+      tags: [always, docker]
+
+    - name: Display Docker status if installed
+      debug:
+        msg: "Docker is already installed: {{ docker_check.stdout }}"
+      when: docker_check.rc == 0
+      tags: [always, docker]
+
+    # ==========================================================================
+    # INSTALL PREREQUISITES
+    # ==========================================================================
+
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [docker]
+
+    - name: Install Docker prerequisites
+      apt:
+        name: "{{ docker.prerequisites }}"
+        state: present
+      tags: [docker]
+
+    # ==========================================================================
+    # DETECT SYSTEM ARCHITECTURE
+    # ==========================================================================
+
+    - name: Detect system architecture
+      command: dpkg --print-architecture
+      register: system_arch
+      changed_when: false
+      check_mode: false
+      tags: [docker]
+
+    - name: Set Docker repository URL
+      set_fact:
+        docker_repo: "deb [arch={{ system_arch.stdout }} signed-by={{ docker_gpg_key_path }}] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+      tags: [docker]
+
+    - name: Display detected architecture
+      debug:
+        msg: "Detected architecture: {{ system_arch.stdout }}"
+      tags: [docker]
+
+    # ==========================================================================
+    # ADD DOCKER REPOSITORY
+    # ==========================================================================
+
+    - name: Create keyrings directory
+      file:
+        path: /usr/share/keyrings
+        state: directory
+        mode: '0755'
+      tags: [docker]
+
+    - name: Check if Docker GPG key exists
+      stat:
+        path: "{{ docker_gpg_key_path }}"
+      register: docker_gpg_key
+      tags: [docker]
+
+    - name: Download Docker GPG key
+      shell: |
+        curl -fsSL {{ docker_gpg_key_url }} | gpg --dearmor -o {{ docker_gpg_key_path }}
+        chmod 644 {{ docker_gpg_key_path }}
+      when: not docker_gpg_key.stat.exists
+      tags: [docker]
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "{{ docker_repo }}"
+        state: present
+        filename: docker
+      tags: [docker]
+
+    - name: Update apt cache after adding Docker repo
+      apt:
+        update_cache: true
+      tags: [docker]
+
+    # ==========================================================================
+    # INSTALL DOCKER
+    # ==========================================================================
+
+    - name: Install Docker packages
+      apt:
+        name: "{{ docker.packages }}"
+        state: present
+      notify: Restart Docker
+      tags: [docker]
+
+    # ==========================================================================
+    # CONFIGURE DOCKER DAEMON
+    # ==========================================================================
+
+    - name: Create Docker daemon configuration directory
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+      tags: [docker, config]
+
+    - name: Configure Docker daemon (fix /data mounting issues)
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "{{ docker.daemon_config.log_driver }}",
+            "log-opts": {
+              "max-size": "{{ docker.daemon_config.log_opts.max_size }}",
+              "max-file": "{{ docker.daemon_config.log_opts.max_file }}"
+            },
+            "storage-driver": "{{ docker.daemon_config.storage_driver }}",
+            "data-root": "/var/lib/docker"
+          }
+        mode: '0644'
+      notify: Restart Docker
+      tags: [docker, config]
+
+    # ==========================================================================
+    # USER CONFIGURATION
+    # ==========================================================================
+
+    - name: Ensure docker group exists
+      group:
+        name: docker
+        state: present
+      tags: [docker, permissions]
+
+    - name: Add user to docker group
+      user:
+        name: "{{ docker.user }}"
+        groups: docker
+        append: true
+      tags: [docker, permissions]
+
+    # ==========================================================================
+    # SERVICE MANAGEMENT
+    # ==========================================================================
+
+    - name: Enable Docker service
+      systemd:
+        name: docker
+        enabled: true
+        state: started
+      tags: [docker]
+
+    - name: Enable containerd service
+      systemd:
+        name: containerd
+        enabled: true
+        state: started
+      tags: [docker]
+
+    # ==========================================================================
+    # FIX DOCKER SOCKET PERMISSIONS
+    # ==========================================================================
+
+    - name: Set correct permissions on Docker socket
+      file:
+        path: /var/run/docker.sock
+        owner: root
+        group: docker
+        mode: '0660'
+      tags: [docker, permissions]
+
+    # ==========================================================================
+    # VERIFICATION
+    # ==========================================================================
+
+    - name: Wait for Docker to be ready
+      wait_for:
+        path: /var/run/docker.sock
+        state: present
+        timeout: 60
+      tags: [docker, verify]
+
+    - name: Verify Docker installation
+      command: docker --version
+      register: docker_version
+      changed_when: false
+      tags: [docker, verify]
+
+    - name: Verify Docker Compose plugin
+      command: docker compose version
+      register: compose_version
+      changed_when: false
+      tags: [docker, verify]
+
+    - name: Display Docker version
+      debug:
+        msg:
+          - "Docker installed successfully!"
+          - "Docker version: {{ docker_version.stdout }}"
+          - "Docker Compose version: {{ compose_version.stdout }}"
+      tags: [docker, verify]
+
+    - name: Test Docker without sudo
+      command: docker ps
+      become: false
+      register: docker_test
+      changed_when: false
+      failed_when: false
+      tags: [docker, verify]
+
+    - name: Display Docker permission status
+      debug:
+        msg: |
+          {% if docker_test.rc == 0 %}
+          ✅ Docker is working without sudo for user {{ docker.user }}
+          {% else %}
+          ⚠️  Docker permission not yet active. User needs to log out and back in.
+          Run: newgrp docker
+          Or logout and login again.
+          {% endif %}
+      tags: [docker, verify]
+
+    # ==========================================================================
+    # POST-INSTALLATION INFO
+    # ==========================================================================
+
+    - name: Display post-installation information
+      debug:
+        msg:
+          - "=============================================="
+          - "Docker Installation Complete!"
+          - "=============================================="
+          - ""
+          - "✅ Docker Engine: {{ docker_version.stdout | default(docker_check.stdout) }}"
+          - "✅ Docker Compose: {{ compose_version.stdout | default('installed') }}"
+          - "✅ User '{{ docker.user }}' added to docker group"
+          - "✅ Docker daemon configured for /data access"
+          - ""
+          - "⚠️  IMPORTANT: If you see permission errors:"
+          - "   1. Log out and log back in, OR"
+          - "   2. Run: newgrp docker"
+          - ""
+          - "📝 Next Steps:"
+          - "   - Deploy Nextcloud: ansible-playbook -i inventory/homelab deploy-nextcloud.yml"
+          - "   - Test Docker: docker run hello-world"
+          - ""
+          - "=============================================="
+      tags: [always]
+      when: docker_check.rc == 0

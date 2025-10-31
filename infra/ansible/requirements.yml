@@ -1,0 +1,19 @@
+---
+# ==============================================================================
+# Ansible Requirements
+# ==============================================================================
+# Purpose: Define required Ansible collections for Nextcloud deployment
+#
+# Installation:
+#   ansible-galaxy collection install -r requirements.yml
+#
+# ==============================================================================
+
+collections:
+  # Docker collection for container management
+  - name: community.docker
+    version: ">=3.4.0"
+
+  # General utilities
+  - name: community.general
+    version: ">=7.0.0"

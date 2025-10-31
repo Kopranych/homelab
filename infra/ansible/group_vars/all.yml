@@ -36,5 +36,89 @@ min_free_space_gb: "{{ photo_consolidation.safety.min_free_space_gb }}"
 # Services configuration
 services_config: "{{ (lookup('file', homelab_config_file) | from_yaml).services }}"
 
-# Network configuration  
+# Network configuration
 network_config: "{{ (lookup('file', homelab_config_file) | from_yaml).network }}"
+
+# ====================
+# NEXTCLOUD CONFIGURATION
+# ====================
+nextcloud:
+  # Installation directories
+  compose_dir: "/home/{{ ansible_user }}/docker-compose/nextcloud"
+  certs_dir: "/home/{{ ansible_user }}/docker-compose/nextcloud/certs"
+
+  # Data directories (on /data partition)
+  data_root: "/data/docker/nextcloud"
+  user_files: "/data/nextcloud/files"
+  photo_consolidation: "/data/photo-consolidation"
+
+  # Docker image versions
+  images:
+    nextcloud: "nextcloud:28-apache"
+    postgres: "postgres:15-alpine"
+    redis: "redis:7-alpine"
+    traefik: "traefik:v2.10"
+
+  # Database configuration
+  database:
+    name: "nextcloud"
+    user: "nextcloud"
+    password: "nextcloud_db_pass_2025"  # Change in production!
+
+  # Redis configuration
+  redis:
+    password: "redis_pass_2025"  # Change in production!
+
+  # Admin configuration
+  admin:
+    user: "admin"
+    password: "admin_pass_2025"  # Change in production!
+
+  # Network configuration
+  network:
+    # These will be auto-detected during deployment
+    local_ip: "{{ ansible_default_ipv4.address | default('localhost') }}"
+    tailscale_ip: ""  # Auto-detected
+    tailscale_hostname: ""  # Auto-detected
+
+  # HTTPS configuration
+  https:
+    enabled: true  # Set to false to skip HTTPS setup
+    tailscale_cert_path: "/var/lib/tailscale/certs"
+
+  # Trusted domains (will be populated during deployment)
+  trusted_domains:
+    - "localhost"
+    - "192.168.0.6"
+    - "homelab"
+    - "homelab.nebelung-mercat.ts.net"
+    - "100.65.45.18"
+
+# Docker configuration
+docker:
+  # User to add to docker group
+  user: "{{ ansible_user }}"
+
+  # Docker daemon configuration
+  daemon_config:
+    log_driver: "json-file"
+    log_opts:
+      max_size: "10m"
+      max_file: "3"
+    storage_driver: "overlay2"
+
+  # APT packages for Docker
+  prerequisites:
+    - curl
+    - wget
+    - apt-transport-https
+    - ca-certificates
+    - gnupg
+    - lsb-release
+
+  packages:
+    - docker-ce
+    - docker-ce-cli
+    - containerd.io
+    - docker-buildx-plugin
+    - docker-compose-plugin

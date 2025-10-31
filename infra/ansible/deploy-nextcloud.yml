@@ -1,0 +1,484 @@
+---
+# ==============================================================================
+# Nextcloud Deployment Playbook
+# ==============================================================================
+# Purpose: Deploy Nextcloud with PostgreSQL, Redis, and Traefik reverse proxy
+#
+# This playbook:
+# 1. Creates directory structure with proper permissions
+# 2. Detects Tailscale hostname for HTTPS
+# 3. Obtains Tailscale certificates (if HTTPS enabled)
+# 4. Deploys Nextcloud stack using Docker Compose
+# 5. Copies certificates into Traefik container
+# 6. Configures Nextcloud (trusted domains, optimization)
+# 7. Verifies deployment
+#
+# Usage:
+#   ansible-playbook -i inventory/homelab deploy-nextcloud.yml
+#
+# Skip HTTPS:
+#   ansible-playbook -i inventory/homelab deploy-nextcloud.yml -e "nextcloud_https_enabled=false"
+#
+# ==============================================================================
+
+- name: Deploy Nextcloud with Docker Compose
+  hosts: homelab
+  become: true
+  gather_facts: true
+
+  vars:
+    # Allow HTTPS to be disabled via command line
+    nextcloud_https_enabled: "{{ nextcloud.https.enabled | default(true) | bool }}"
+
+  handlers:
+    - name: Restart Traefik
+      command: docker restart nextcloud-traefik
+      when: traefik_container_exists.exists | default(false)
+
+  pre_tasks:
+    # ==========================================================================
+    # PRE-FLIGHT CHECKS
+    # ==========================================================================
+
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      failed_when: false
+      changed_when: false
+
+    - name: Fail if Docker is not installed
+      fail:
+        msg: |
+          Docker is not installed. Please run install-docker.yml first:
+          ansible-playbook -i inventory/homelab install-docker.yml
+      when: docker_check.rc != 0
+
+    - name: Check Docker Compose plugin
+      command: docker compose version
+      register: compose_check
+      failed_when: false
+      changed_when: false
+
+    - name: Fail if Docker Compose is not installed
+      fail:
+        msg: "Docker Compose plugin not found. Please reinstall Docker."
+      when: compose_check.rc != 0
+
+    - name: Install Docker SDK for Python
+      apt:
+        name: python3-docker
+        state: present
+      tags: [docker]
+
+    # ==========================================================================
+    # NETWORK DETECTION
+    # ==========================================================================
+
+    - name: Detect Tailscale hostname
+      shell: |
+        # Try multiple methods to detect Tailscale hostname
+        HOSTNAME=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//')
+        if [ -z "$HOSTNAME" ] || [ "$HOSTNAME" = "null" ]; then
+          HOSTNAME=$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}' | sed 's/\.$//')
+        fi
+        if [ -z "$HOSTNAME" ]; then
+          HOSTNAME=$(tailscale status 2>/dev/null | grep -E "^$(hostname)" | awk '{print $2}' | sed 's/\.$//')
+        fi
+        echo "$HOSTNAME"
+      register: tailscale_hostname_result
+      failed_when: false
+      changed_when: false
+
+    - name: Set Tailscale hostname fact
+      set_fact:
+        tailscale_hostname: "{{ tailscale_hostname_result.stdout | trim }}"
+        tailscale_available: "{{ (tailscale_hostname_result.stdout | trim | length > 0) | bool }}"
+
+    - name: Detect Tailscale IP
+      shell: tailscale ip -4 2>/dev/null || echo ""
+      register: tailscale_ip_result
+      failed_when: false
+      changed_when: false
+
+    - name: Set Tailscale IP fact
+      set_fact:
+        tailscale_ip: "{{ tailscale_ip_result.stdout | trim }}"
+
+    - name: Display network information
+      debug:
+        msg:
+          - "Network Configuration Detected:"
+          - "  Local IP: {{ ansible_default_ipv4.address }}"
+          - "  Tailscale Hostname: {{ tailscale_hostname | default('Not detected') }}"
+          - "  Tailscale IP: {{ tailscale_ip | default('Not detected') }}"
+          - "  HTTPS Enabled: {{ nextcloud_https_enabled }}"
+          - "  Tailscale Available: {{ tailscale_available }}"
+          - "  Will setup HTTPS: {{ nextcloud_https_enabled and tailscale_available }}"
+
+  tasks:
+    # ==========================================================================
+    # DIRECTORY STRUCTURE CREATION
+    # ==========================================================================
+
+    - name: Create Nextcloud Docker Compose directory
+      file:
+        path: "{{ nextcloud.compose_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      become: false
+
+    - name: Create Nextcloud data directories on /data partition
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ nextcloud.data_root }}/config", owner: "33", group: "33", mode: "0755" }
+        - { path: "{{ nextcloud.data_root }}/data", owner: "33", group: "33", mode: "0770" }
+        - { path: "{{ nextcloud.data_root }}/db", owner: "70", group: "70", mode: "0700" }
+        - { path: "{{ nextcloud.data_root }}/redis", owner: "999", group: "999", mode: "0755" }
+        - { path: "{{ nextcloud.user_files }}", owner: "33", group: "33", mode: "0755" }
+        - { path: "{{ nextcloud.photo_consolidation }}/incoming", owner: "33", group: "33", mode: "0755" }
+        - { path: "{{ nextcloud.photo_consolidation }}/duplicates", owner: "33", group: "33", mode: "0755" }
+        - { path: "{{ nextcloud.photo_consolidation }}/final", owner: "33", group: "33", mode: "0755" }
+        - { path: "{{ nextcloud.photo_consolidation }}/logs", owner: "33", group: "33", mode: "0755" }
+
+    - name: Display directory creation info
+      debug:
+        msg:
+          - "✅ Directories created with proper permissions"
+          - "   - Docker data: {{ nextcloud.data_root }}"
+          - "   - User files: {{ nextcloud.user_files }}"
+          - "   - Photo consolidation: {{ nextcloud.photo_consolidation }}"
+          - ""
+          - "⚠️  CRITICAL: Directories owned by www-data (UID 33) BEFORE container start"
+          - "   This prevents 'Cannot create or write into data directory' error"
+
+    # ==========================================================================
+    # TAILSCALE CERTIFICATES (OPTIONAL)
+    # ==========================================================================
+
+    - name: Process HTTPS setup
+      when: nextcloud_https_enabled and tailscale_available
+      block:
+        - name: Check if Tailscale is running
+          command: tailscale status
+          register: tailscale_status
+          failed_when: false
+          changed_when: false
+
+        - name: Warn if Tailscale not running
+          debug:
+            msg: "⚠️  Tailscale is not running. HTTPS will be disabled."
+          when: tailscale_status.rc != 0
+
+        - name: Request Tailscale HTTPS certificate
+          command: tailscale cert {{ tailscale_hostname }}
+          register: cert_request
+          failed_when: false
+          changed_when: cert_request.rc == 0
+          when: tailscale_status.rc == 0
+
+        - name: Check if certificates were created
+          stat:
+            path: "{{ nextcloud.https.tailscale_cert_path }}/{{ tailscale_hostname }}.crt"
+          register: cert_file
+
+        - name: Display certificate status
+          debug:
+            msg: |
+              {% if cert_file.stat.exists %}
+              ✅ Tailscale HTTPS certificates obtained successfully
+              {% else %}
+              ⚠️  Certificate generation failed. Possible reasons:
+                 1. HTTPS not enabled in Tailscale Admin Console
+                 2. Device not properly connected to Tailscale
+                 3. MagicDNS not working
+              Continuing with HTTP-only deployment.
+              {% endif %}
+
+        - name: Create certificates directory
+          file:
+            path: "{{ nextcloud.certs_dir }}"
+            state: directory
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: '0755'
+          become: false
+          when: cert_file.stat.exists
+
+        - name: Copy certificates to compose directory
+          copy:
+            src: "{{ nextcloud.https.tailscale_cert_path }}/{{ tailscale_hostname }}.{{ item }}"
+            dest: "{{ nextcloud.certs_dir }}/{{ tailscale_hostname }}.{{ item }}"
+            remote_src: true
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: '0644'
+          loop:
+            - crt
+            - key
+          when: cert_file.stat.exists
+
+        - name: Set certificate available fact
+          set_fact:
+            certificates_available: "{{ cert_file.stat.exists }}"
+
+    - name: Set certificate fact when HTTPS disabled
+      set_fact:
+        certificates_available: false
+      when: not nextcloud_https_enabled or not tailscale_available
+
+    # ==========================================================================
+    # GENERATE DOCKER COMPOSE CONFIGURATION
+    # ==========================================================================
+
+    - name: Build trusted domains list
+      set_fact:
+        nextcloud_trusted_domains: "{{ (nextcloud.trusted_domains + [tailscale_hostname, tailscale_ip, ansible_default_ipv4.address]) | unique | select() | list }}"
+
+    - name: Generate docker-compose.yml from template
+      template:
+        src: templates/docker-compose.nextcloud.yml.j2
+        dest: "{{ nextcloud.compose_dir }}/docker-compose.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+
+    - name: Generate Traefik dynamic configuration
+      template:
+        src: templates/traefik-dynamic.yml.j2
+        dest: "{{ nextcloud.certs_dir }}/dynamic.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+      when: certificates_available | default(false)
+
+    # ==========================================================================
+    # DEPLOY NEXTCLOUD STACK
+    # ==========================================================================
+
+    - name: Pull Docker images
+      command: docker compose pull
+      args:
+        chdir: "{{ nextcloud.compose_dir }}"
+      become: false
+      changed_when: true
+
+    - name: Start Nextcloud stack
+      command: docker compose up -d
+      args:
+        chdir: "{{ nextcloud.compose_dir }}"
+      become: false
+      register: compose_output
+      changed_when: true
+
+    - name: Display container startup info
+      debug:
+        msg:
+          - "🐳 Docker containers starting..."
+          - "   Waiting for initialization..."
+
+    - name: Wait for containers to start
+      pause:
+        seconds: 30
+
+    # ==========================================================================
+    # COPY CERTIFICATES TO TRAEFIK (IF AVAILABLE)
+    # ==========================================================================
+
+    - name: Check if Traefik container exists
+      command: docker ps -q -f name=nextcloud-traefik
+      register: traefik_container
+      changed_when: false
+
+    - name: Set Traefik container fact
+      set_fact:
+        traefik_container_exists:
+          exists: "{{ traefik_container.stdout != '' }}"
+
+    - name: Copy certificates into Traefik container
+      when: certificates_available | default(false) and traefik_container_exists.exists
+      block:
+        - name: Create /certs directory in Traefik container
+          command: docker exec nextcloud-traefik mkdir -p /certs
+          changed_when: true
+
+        - name: Copy certificate file to Traefik
+          command: >
+            docker cp {{ nextcloud.certs_dir }}/{{ tailscale_hostname }}.crt
+            nextcloud-traefik:/certs/
+          changed_when: true
+
+        - name: Copy key file to Traefik
+          command: >
+            docker cp {{ nextcloud.certs_dir }}/{{ tailscale_hostname }}.key
+            nextcloud-traefik:/certs/
+          changed_when: true
+
+        - name: Copy dynamic configuration to Traefik
+          command: >
+            docker cp {{ nextcloud.certs_dir }}/dynamic.yml
+            nextcloud-traefik:/certs/
+          changed_when: true
+
+        - name: Set certificate permissions in container
+          command: >
+            docker exec nextcloud-traefik chmod 644
+            /certs/{{ tailscale_hostname }}.crt
+            /certs/{{ tailscale_hostname }}.key
+            /certs/dynamic.yml
+          changed_when: true
+
+        - name: Verify certificates in container
+          command: docker exec nextcloud-traefik ls -la /certs/
+          register: cert_verification
+          changed_when: false
+
+        - name: Display certificate verification
+          debug:
+            msg: "{{ cert_verification.stdout_lines }}"
+
+        - name: Restart Traefik to load certificates
+          command: docker restart nextcloud-traefik
+          changed_when: true
+
+        - name: Wait for Traefik to reload
+          pause:
+            seconds: 10
+
+    # ==========================================================================
+    # WAIT FOR NEXTCLOUD INITIALIZATION
+    # ==========================================================================
+
+    - name: Wait for Nextcloud to initialize
+      pause:
+        seconds: 30
+        prompt: "Waiting for Nextcloud to complete initial setup..."
+
+    # ==========================================================================
+    # POST-INSTALLATION CONFIGURATION
+    # ==========================================================================
+
+    - name: Check if Nextcloud is initialized
+      command: docker exec nextcloud-app ls -la /var/www/html/config/config.php
+      register: config_check
+      failed_when: false
+      changed_when: false
+
+    - name: Configure Nextcloud (if initialized)
+      when: config_check.rc == 0
+      block:
+        - name: Add missing database indices
+          command: docker exec -u www-data nextcloud-app php occ db:add-missing-indices
+          register: indices_result
+          failed_when: false
+          changed_when: indices_result.rc == 0
+
+        - name: Convert filecache to bigint
+          command: docker exec -u www-data nextcloud-app php occ db:convert-filecache-bigint --no-interaction
+          register: bigint_result
+          failed_when: false
+          changed_when: bigint_result.rc == 0
+
+        - name: Scan files
+          command: docker exec -u www-data nextcloud-app php occ files:scan --all
+          register: scan_result
+          failed_when: false
+          changed_when: scan_result.rc == 0
+
+    # ==========================================================================
+    # VERIFICATION
+    # ==========================================================================
+
+    - name: Verify container health
+      command: docker compose -f {{ nextcloud.compose_dir }}/docker-compose.yml ps
+      register: container_status
+      changed_when: false
+
+    - name: Display container status
+      debug:
+        msg: "{{ container_status.stdout_lines }}"
+
+    - name: Test web access (HTTP)
+      uri:
+        url: "http://localhost"
+        status_code: [200, 302, 303]
+        timeout: 10
+      register: http_test
+      failed_when: false
+      changed_when: false
+
+    - name: Test HTTPS access
+      uri:
+        url: "https://{{ tailscale_hostname }}"
+        status_code: [200, 302, 303]
+        validate_certs: false
+        timeout: 10
+      register: https_test
+      failed_when: false
+      changed_when: false
+      when: certificates_available | default(false)
+
+    # ==========================================================================
+    # DISPLAY RESULTS
+    # ==========================================================================
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ==============================================
+          ✅ Nextcloud Deployment Complete!
+          ==============================================
+
+          📊 Container Status:
+          {{ container_status.stdout_lines | join('\n') }}
+
+          🌐 Access URLs:
+          {% if http_test.status is defined and http_test.status in [200, 302, 303] %}
+             ✅ Local HTTP: http://{{ ansible_default_ipv4.address }}
+             ✅ Localhost: http://localhost
+          {% else %}
+             ⚠️  HTTP access not yet ready (may need more time)
+          {% endif %}
+          {% if certificates_available and https_test.status is defined and https_test.status in [200, 302, 303] %}
+             ✅ Tailscale HTTPS: https://{{ tailscale_hostname }}
+          {% elif certificates_available %}
+             ⚠️  HTTPS configured but not yet responding
+             Access via: https://{{ tailscale_hostname }}
+          {% else %}
+             ℹ️  HTTPS not configured (Tailscale certificates not available)
+          {% endif %}
+
+          🔐 Default Credentials:
+             Username: {{ nextcloud.admin.user }}
+             Password: {{ nextcloud.admin.password }}
+
+          ⚠️  IMPORTANT: Change default passwords after first login!
+
+          📁 Data Locations:
+             - Config: {{ nextcloud.data_root }}/config
+             - Data: {{ nextcloud.data_root }}/data
+             - Database: {{ nextcloud.data_root }}/db
+             - Redis: {{ nextcloud.data_root }}/redis
+             - User Files: {{ nextcloud.user_files }}
+             - Photo Consolidation: {{ nextcloud.photo_consolidation }}
+
+          📝 Management Commands:
+             - View logs: cd {{ nextcloud.compose_dir }} && docker compose logs -f
+             - Restart: cd {{ nextcloud.compose_dir }} && docker compose restart
+             - Stop: cd {{ nextcloud.compose_dir }} && docker compose down
+
+          🔄 Next Steps:
+             1. Access Nextcloud in browser
+             2. Complete initial setup if needed
+             3. Change default passwords
+             4. Configure mobile apps (Tailscale + Nextcloud)
+
+          ==============================================
