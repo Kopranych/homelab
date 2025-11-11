@@ -1,0 +1,160 @@
+---
+# ==============================================================================
+# Monitoring Stack Main Orchestration Playbook
+# ==============================================================================
+# Purpose: Main entry point for all monitoring operations (TIG + Telegram)
+#
+# This playbook orchestrates:
+# 1. Docker installation (if needed)
+# 2. TIG stack deployment (Telegraf + InfluxDB + Grafana)
+# 3. Telegram alerting configuration
+# 4. Dashboard provisioning
+#
+# Usage:
+#   # Full installation (Docker + Monitoring):
+#   ansible-playbook -i inventory/homelab monitoring.yml
+#
+#   # Deploy only (skip Docker if already installed):
+#   ansible-playbook -i inventory/homelab monitoring.yml --skip-tags docker
+#
+#   # Undeploy everything:
+#   ansible-playbook -i inventory/homelab monitoring.yml -e "operation=undeploy"
+#
+#   # Undeploy with data removal (DANGEROUS):
+#   ansible-playbook -i inventory/homelab monitoring.yml -e "operation=undeploy remove_data=true"
+#
+# ==============================================================================
+
+- name: Monitoring Stack Orchestration
+  hosts: homelab
+  gather_facts: true
+
+  pre_tasks:
+    - name: Display operation mode
+      debug:
+        msg: |
+          ==============================================
+          Monitoring Stack Orchestration (TIG + Telegram)
+          ==============================================
+
+          Operation: {{ operation | default('deploy') | upper }}
+          Target: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+
+          {% if operation | default('deploy') == 'deploy' %}
+          This will deploy:
+            1. InfluxDB - Time-series database
+            2. Telegraf - Metrics collector
+            3. Grafana - Dashboards & alerting
+            4. Telegram - Alert notifications
+
+          Monitoring coverage:
+            - System metrics (CPU, RAM, disk, network)
+            - Docker containers (all running containers)
+            - Nextcloud services (if deployed)
+            - Custom photo consolidation metrics
+
+          {% elif operation | default('deploy') == 'undeploy' %}
+          This will:
+            1. Stop and remove all monitoring containers
+            2. Optionally remove Docker images
+            3. Optionally remove data directories
+          {% endif %}
+
+          ==============================================
+
+    - name: Validate operation
+      fail:
+        msg: "Invalid operation: {{ operation | default('deploy') }}. Must be 'deploy' or 'undeploy'"
+      when: operation is defined and operation not in ['deploy', 'undeploy']
+
+# ==============================================================================
+# DEPLOYMENT OPERATIONS
+# ==============================================================================
+
+- name: Install Docker
+  import_playbook: install-docker.yml
+  when: operation | default('deploy') == 'deploy'
+  tags: [docker]
+
+- name: Deploy Monitoring Stack
+  import_playbook: deploy-monitoring.yml
+  when: operation | default('deploy') == 'deploy'
+  tags: [monitoring]
+
+# ==============================================================================
+# UNDEPLOYMENT OPERATIONS
+# ==============================================================================
+
+- name: Undeploy Monitoring Stack
+  import_playbook: undeploy-monitoring.yml
+  when: operation | default('deploy') == 'undeploy'
+  tags: [undeploy]
+
+# ==============================================================================
+# FINAL STATUS
+# ==============================================================================
+
+- name: Display final status
+  hosts: homelab
+  gather_facts: false
+  tasks:
+    - name: Display completion message
+      debug:
+        msg: |
+          ==============================================
+          ✅ {{ operation | default('deploy') | upper }} Operation Complete!
+          ==============================================
+
+          {% if operation | default('deploy') == 'deploy' %}
+          📊 Monitoring Stack Deployed:
+             - InfluxDB: http://{{ ansible_default_ipv4.address }}:8086
+             - Grafana: http://{{ ansible_default_ipv4.address }}:3000
+
+          🔐 Default Credentials:
+             Grafana:
+               Username: {{ monitoring.grafana.admin_user }}
+               Password: {{ monitoring.grafana.admin_password }}
+
+             InfluxDB:
+               Username: {{ monitoring.influxdb.admin_user }}
+               Password: {{ monitoring.influxdb.admin_password }}
+
+          ⚠️  IMPORTANT: Change default passwords after first login!
+
+          📱 Telegram Alerts:
+             {% if monitoring.telegram.bot_token != '' %}
+             ✅ Configured and ready
+             {% else %}
+             ⚠️  Not configured. Set bot_token and chat_id in config.yml
+             {% endif %}
+
+          📈 Pre-configured Dashboards:
+             1. System Overview - CPU, RAM, Disk, Network
+             2. Docker Containers - All container metrics
+             3. Nextcloud - Service-specific metrics
+
+          🔔 Pre-configured Alerts:
+             - Disk space < {{ monitoring.alerts.disk_space_threshold_gb }}GB
+             - Memory usage > {{ monitoring.alerts.memory_threshold_percent }}%
+             - CPU usage > {{ monitoring.alerts.cpu_threshold_percent }}%
+             - Container restarts > {{ monitoring.alerts.container_restart_threshold }}
+
+          📝 Next Steps:
+             1. Access Grafana at http://{{ ansible_default_ipv4.address }}:3000
+             2. Log in with credentials above
+             3. Configure Telegram bot (if not done yet)
+             4. Explore pre-built dashboards
+             5. Customize alert thresholds if needed
+
+          📚 Documentation:
+             See docs/06-monitoring-setup.md for details
+
+          {% elif operation | default('deploy') == 'undeploy' %}
+          ✅ Monitoring stack has been removed
+
+          To reinstall:
+             ansible-playbook -i inventory/homelab monitoring.yml
+          {% endif %}
+
+          ==============================================

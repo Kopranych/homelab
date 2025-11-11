@@ -40,6 +40,26 @@ services_config: "{{ (lookup('file', homelab_config_file) | from_yaml).services 
 network_config: "{{ (lookup('file', homelab_config_file) | from_yaml).network }}"
 
 # ====================
+# MONITORING CONFIGURATION
+# ====================
+# Load monitoring stack configuration from main config
+_monitoring_base: "{{ (lookup('file', homelab_config_file) | from_yaml).services.core.monitoring }}"
+
+# Override values that need proper Ansible variable expansion
+_monitoring_overrides:
+  compose_dir: "/home/{{ ansible_user }}/docker-compose/monitoring"
+  influxdb:
+    admin_password: "{{ vault_influxdb_password | default('changeme_influx') }}"
+  grafana:
+    admin_password: "{{ vault_grafana_password | default('changeme_grafana') }}"
+  telegram:
+    bot_token: "{{ vault_telegram_bot_token | default('') }}"
+    chat_id: "{{ vault_telegram_chat_id | default('') }}"
+
+# Merge base config with overrides
+monitoring: "{{ _monitoring_base | combine(_monitoring_overrides, recursive=True) }}"
+
+# ====================
 # NEXTCLOUD CONFIGURATION
 # ====================
 nextcloud:

@@ -1,0 +1,217 @@
+---
+# ==============================================================================
+# Monitoring Stack Undeployment Playbook
+# ==============================================================================
+# Purpose: Safely remove TIG monitoring stack
+#
+# This playbook:
+# 1. Stops and removes all monitoring containers
+# 2. Optionally removes Docker images
+# 3. Optionally removes data directories
+# 4. Displays cleanup status
+#
+# Usage:
+#   # Stop containers, keep data:
+#   ansible-playbook -i inventory/homelab undeploy-monitoring.yml
+#
+#   # Remove everything including data (DANGEROUS):
+#   ansible-playbook -i inventory/homelab undeploy-monitoring.yml \
+#     -e "remove_data=true remove_images=true"
+#
+# ==============================================================================
+
+- name: Undeploy Monitoring Stack
+  hosts: homelab
+  become: true
+  gather_facts: true
+
+  vars:
+    remove_data: false
+    remove_images: false
+
+  pre_tasks:
+    - name: Display undeployment plan
+      debug:
+        msg: |
+          ==============================================
+          Monitoring Stack Undeployment
+          ==============================================
+
+          Target: {{ inventory_hostname }}
+
+          This will:
+            ✓ Stop all monitoring containers
+            ✓ Remove monitoring containers
+            {% if remove_images %}✓ Remove Docker images{% else %}✗ Keep Docker images{% endif %}
+            {% if remove_data %}⚠️  REMOVE ALL MONITORING DATA (metrics will be lost!){% else %}✓ Preserve monitoring data{% endif %}
+
+          Containers to remove:
+            - monitoring-grafana
+            - monitoring-influxdb
+            - monitoring-telegraf
+
+          {% if not remove_data %}
+          Data will be preserved at:
+            - {{ monitoring.data_root }}/influxdb
+            - {{ monitoring.data_root }}/grafana
+            - {{ monitoring.compose_dir }}
+          {% endif %}
+
+          ==============================================
+
+    - name: Confirm data removal (if requested)
+      pause:
+        prompt: |
+
+          ⚠️  WARNING: You are about to PERMANENTLY DELETE all monitoring data!
+
+          This includes:
+            - All historical metrics (cannot be recovered)
+            - Grafana dashboards and settings
+            - InfluxDB time-series data
+
+          Type 'yes' to confirm data removal, or press Ctrl+C to abort
+      when: remove_data | bool
+      register: confirmation
+
+    - name: Validate confirmation
+      fail:
+        msg: "Data removal not confirmed. Aborting."
+      when:
+        - remove_data | bool
+        - confirmation.user_input | default('') != 'yes'
+
+  tasks:
+    # ==========================================================================
+    # STOP AND REMOVE CONTAINERS
+    # ==========================================================================
+
+    - name: Check if monitoring stack is deployed
+      stat:
+        path: "{{ monitoring.compose_dir }}/docker-compose.yml"
+      register: compose_file
+
+    - name: Stop and remove monitoring containers
+      when: compose_file.stat.exists
+      block:
+        - name: Stop monitoring stack
+          command: docker compose down
+          args:
+            chdir: "{{ monitoring.compose_dir }}"
+          become: false
+          ignore_errors: true
+          register: compose_down
+
+        - name: Display container removal status
+          debug:
+            msg: "{{ compose_down.stdout_lines | default(['No output']) }}"
+
+        - name: Verify containers are removed
+          command: docker ps -a --filter "name=monitoring-" --format "{{ '{{' }}.Names{{ '}}' }}"
+          register: remaining_containers
+          changed_when: false
+
+        - name: Force remove any remaining monitoring containers
+          command: docker rm -f {{ item }}
+          loop: "{{ remaining_containers.stdout_lines }}"
+          when: remaining_containers.stdout_lines | length > 0
+          ignore_errors: true
+
+    - name: Check for orphaned monitoring containers
+      command: docker ps -a --filter "name=monitoring-" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: orphaned_containers
+      changed_when: false
+
+    - name: Remove orphaned containers
+      command: docker rm -f {{ item }}
+      loop: "{{ orphaned_containers.stdout_lines }}"
+      when: orphaned_containers.stdout_lines | length > 0
+
+    # ==========================================================================
+    # REMOVE DOCKER IMAGES (OPTIONAL)
+    # ==========================================================================
+
+    - name: Remove Docker images
+      when: remove_images | bool
+      block:
+        - name: Remove monitoring Docker images
+          command: docker rmi {{ item }}
+          loop:
+            - "{{ monitoring.telegraf.image }}"
+            - "{{ monitoring.influxdb.image }}"
+            - "{{ monitoring.grafana.image }}"
+          ignore_errors: true
+
+        - name: Display image removal status
+          debug:
+            msg: "✅ Monitoring Docker images removed"
+
+    # ==========================================================================
+    # REMOVE DOCKER NETWORK
+    # ==========================================================================
+
+    - name: Remove monitoring Docker network
+      command: docker network rm monitoring
+      ignore_errors: true
+
+    # ==========================================================================
+    # REMOVE DATA DIRECTORIES (OPTIONAL)
+    # ==========================================================================
+
+    - name: Remove data directories
+      when: remove_data | bool
+      block:
+        - name: Remove monitoring data directories
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ monitoring.data_root }}/influxdb"
+            - "{{ monitoring.data_root }}/grafana"
+            - "{{ monitoring.data_root }}/telegraf"
+            - "{{ monitoring.data_root }}"
+            - "{{ monitoring.compose_dir }}"
+
+        - name: Display data removal status
+          debug:
+            msg: "⚠️  All monitoring data has been permanently deleted"
+
+    # ==========================================================================
+    # DISPLAY RESULTS
+    # ==========================================================================
+
+    - name: Display undeployment summary
+      debug:
+        msg: |
+          ==============================================
+          ✅ Monitoring Stack Undeployment Complete!
+          ==============================================
+
+          Removed:
+            ✓ monitoring-grafana container
+            ✓ monitoring-influxdb container
+            ✓ monitoring-telegraf container
+            ✓ monitoring network
+
+          {% if remove_images %}
+          Docker Images:
+            ✓ Removed monitoring images
+          {% else %}
+          Docker Images:
+            ✓ Kept for faster redeployment
+          {% endif %}
+
+          {% if remove_data %}
+          Data:
+            ⚠️  ALL DATA PERMANENTLY DELETED
+          {% else %}
+          Data Preserved:
+            ✓ InfluxDB data: {{ monitoring.data_root }}/influxdb
+            ✓ Grafana data: {{ monitoring.data_root }}/grafana
+            ✓ Configuration: {{ monitoring.compose_dir }}
+
+          To reinstall with existing data:
+            ansible-playbook -i inventory/homelab monitoring.yml
+          {% endif %}
+
+          ==============================================

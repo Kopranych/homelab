@@ -70,14 +70,49 @@ services:
         dashboard: 8080
       
     monitoring:
-      prometheus:
+      # TIG Stack (Telegraf + InfluxDB + Grafana)
+      enabled: true
+      compose_dir: "~/docker-compose/monitoring"  # Expanded by Ansible
+      data_root: "/data/docker/monitoring"
+
+      # Telegraf - Metrics Collection
+      telegraf:
         enabled: true
-        port: 9090
-        data_retention: "30d"
+        image: "telegraf:1.29-alpine"
+        interval: "10s"
+        flush_interval: "10s"
+
+      # InfluxDB - Time Series Database
+      influxdb:
+        enabled: true
+        image: "influxdb:2.7-alpine"
+        port: 8086
+        admin_user: "admin"
+        admin_password: "changeme_influx"  # Override in config.local.yml or vault
+        organization: "homelab"
+        bucket: "metrics"
+        retention: "30d"
+
+      # Grafana - Visualization & Alerting
       grafana:
         enabled: true
+        image: "grafana/grafana:10.2.3"
         port: 3000
-        admin_password: "{{ vault_grafana_password }}"
+        admin_user: "admin"
+        admin_password: "changeme_grafana"  # Override in config.local.yml or vault
+
+      # Telegram Alerting
+      telegram:
+        enabled: false
+        bot_token: ""  # Set in config.local.yml or vault
+        chat_id: ""    # Set in config.local.yml or vault
+
+      # Alert Configuration
+      alerts:
+        disk_space_threshold_gb: 750
+        memory_threshold_percent: 90
+        cpu_threshold_percent: 85
+        container_restart_threshold: 3
   
   # Photo Management
   photo_management:

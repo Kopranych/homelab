@@ -1,0 +1,345 @@
+---
+# ==============================================================================
+# Monitoring Stack Deployment Playbook
+# ==============================================================================
+# Purpose: Deploy TIG stack (Telegraf + InfluxDB + Grafana) with Telegram alerts
+#
+# This playbook:
+# 1. Creates directory structure with proper permissions
+# 2. Generates InfluxDB initial setup token
+# 3. Deploys TIG stack using Docker Compose
+# 4. Provisions Grafana datasource, dashboards, and alerts
+# 5. Configures Telegraf to collect system and Docker metrics
+# 6. Sets up Telegram alerting
+# 7. Verifies deployment
+#
+# Usage:
+#   ansible-playbook -i inventory/homelab deploy-monitoring.yml
+#
+# ==============================================================================
+
+- name: Deploy Monitoring Stack with Docker Compose
+  hosts: homelab
+  become: true
+  gather_facts: true
+
+  handlers:
+    - name: Restart Telegraf
+      command: docker restart monitoring-telegraf
+      when: telegraf_container_exists.exists | default(false)
+
+    - name: Restart Grafana
+      command: docker restart monitoring-grafana
+      when: grafana_container_exists.exists | default(false)
+
+  pre_tasks:
+    # ==========================================================================
+    # PRE-FLIGHT CHECKS
+    # ==========================================================================
+
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      failed_when: false
+      changed_when: false
+
+    - name: Fail if Docker is not installed
+      fail:
+        msg: |
+          Docker is not installed. Please run install-docker.yml first:
+          ansible-playbook -i inventory/homelab install-docker.yml
+      when: docker_check.rc != 0
+
+    - name: Check Docker Compose plugin
+      command: docker compose version
+      register: compose_check
+      failed_when: false
+      changed_when: false
+
+    - name: Fail if Docker Compose is not installed
+      fail:
+        msg: "Docker Compose plugin not found. Please reinstall Docker."
+      when: compose_check.rc != 0
+
+    - name: Install Docker SDK for Python
+      apt:
+        name: python3-docker
+        state: present
+      tags: [docker]
+
+    - name: Get Docker group ID
+      shell: "getent group docker | cut -d: -f3"
+      register: docker_gid
+      changed_when: false
+
+    - name: Set Docker group ID fact
+      set_fact:
+        docker_group_id: "{{ docker_gid.stdout }}"
+
+    - name: Generate stable InfluxDB token
+      set_fact:
+        influxdb_token: "homelab-influxdb-token-{{ ansible_hostname | hash('sha256') | truncate(32, True, '') }}"
+
+    - name: Display monitoring configuration
+      debug:
+        msg:
+          - "Monitoring Stack Configuration:"
+          - "  InfluxDB Port: {{ monitoring.influxdb.port }}"
+          - "  Grafana Port: {{ monitoring.grafana.port }}"
+          - "  Telegraf Interval: {{ monitoring.telegraf.interval }}"
+          - "  Data Retention: {{ monitoring.influxdb.retention }}"
+          - "  Telegram Alerts: {{ monitoring.telegram.enabled }}"
+
+  tasks:
+    # ==========================================================================
+    # DIRECTORY STRUCTURE CREATION
+    # ==========================================================================
+
+    - name: Create monitoring Docker Compose directory
+      file:
+        path: "{{ monitoring.compose_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      become: false
+
+    - name: Create monitoring data directories on /data partition
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner | default(ansible_user) }}"
+        group: "{{ item.group | default(ansible_user) }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ monitoring.data_root }}", mode: "0755" }
+        - { path: "{{ monitoring.data_root }}/influxdb", mode: "0755" }
+        - { path: "{{ monitoring.data_root }}/grafana", mode: "0755" }
+        - { path: "{{ monitoring.data_root }}/telegraf", mode: "0755" }
+        - { path: "{{ monitoring.compose_dir }}/grafana-provisioning", mode: "0755" }
+        - { path: "{{ monitoring.compose_dir }}/grafana-provisioning/datasources", mode: "0755" }
+        - { path: "{{ monitoring.compose_dir }}/grafana-provisioning/dashboards", mode: "0755" }
+        - { path: "{{ monitoring.compose_dir }}/grafana-provisioning/alerting", mode: "0755" }
+        - { path: "{{ monitoring.compose_dir }}/dashboards", mode: "0755" }
+
+    - name: Display directory creation info
+      debug:
+        msg:
+          - "✅ Directories created with proper permissions"
+          - "   - Docker compose: {{ monitoring.compose_dir }}"
+          - "   - Data root: {{ monitoring.data_root }}"
+          - "   - Grafana provisioning: {{ monitoring.compose_dir }}/grafana-provisioning"
+
+    # ==========================================================================
+    # GENERATE CONFIGURATION FILES
+    # ==========================================================================
+
+    - name: Generate Telegraf configuration
+      template:
+        src: templates/telegraf.conf.j2
+        dest: "{{ monitoring.compose_dir }}/telegraf.conf"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+
+    - name: Generate InfluxDB initialization script
+      template:
+        src: templates/influxdb-init.sh.j2
+        dest: "{{ monitoring.compose_dir }}/influxdb-init.sh"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      become: false
+
+    - name: Generate Grafana datasource provisioning
+      template:
+        src: templates/grafana-datasource.yml.j2
+        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/datasources/influxdb.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+
+    - name: Generate Grafana dashboard provisioning
+      template:
+        src: templates/grafana-dashboard-provider.yml.j2
+        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/dashboards/default.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+
+    - name: Generate Grafana alerting configuration
+      template:
+        src: templates/grafana-alerting.yml.j2
+        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/alerting/telegram.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+      when: monitoring.telegram.enabled and monitoring.telegram.bot_token != ''
+
+    - name: Generate docker-compose.yml from template
+      template:
+        src: templates/docker-compose.monitoring.yml.j2
+        dest: "{{ monitoring.compose_dir }}/docker-compose.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+
+    # ==========================================================================
+    # COPY GRAFANA DASHBOARDS
+    # ==========================================================================
+
+    - name: Check if dashboard files exist locally
+      local_action:
+        module: stat
+        path: "{{ playbook_dir }}/files/grafana-dashboards"
+      register: local_dashboards
+      become: false
+
+    - name: Copy pre-built Grafana dashboards
+      copy:
+        src: "files/grafana-dashboards/"
+        dest: "{{ monitoring.compose_dir }}/dashboards/"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+      when: local_dashboards.stat.exists
+
+    # ==========================================================================
+    # DEPLOY MONITORING STACK
+    # ==========================================================================
+
+    - name: Pull Docker images
+      command: docker compose pull
+      args:
+        chdir: "{{ monitoring.compose_dir }}"
+      become: false
+      changed_when: true
+
+    - name: Start monitoring stack
+      command: docker compose up -d
+      args:
+        chdir: "{{ monitoring.compose_dir }}"
+      become: false
+      register: compose_output
+      changed_when: true
+
+    - name: Display container startup info
+      debug:
+        msg:
+          - "🐳 Docker containers starting..."
+          - "   InfluxDB initializing..."
+          - "   Telegraf starting metrics collection..."
+          - "   Grafana loading dashboards..."
+
+    - name: Wait for InfluxDB to initialize
+      pause:
+        seconds: 20
+
+    - name: Wait for Grafana to initialize
+      pause:
+        seconds: 15
+
+    # ==========================================================================
+    # VERIFICATION
+    # ==========================================================================
+
+    - name: Verify container health
+      command: docker compose -f {{ monitoring.compose_dir }}/docker-compose.yml ps
+      register: container_status
+      changed_when: false
+
+    - name: Display container status
+      debug:
+        msg: "{{ container_status.stdout_lines }}"
+
+    - name: Test InfluxDB access
+      uri:
+        url: "http://localhost:{{ monitoring.influxdb.port }}/health"
+        status_code: [200]
+        timeout: 10
+      register: influxdb_test
+      failed_when: false
+      changed_when: false
+
+    - name: Test Grafana access
+      uri:
+        url: "http://localhost:{{ monitoring.grafana.port }}/api/health"
+        status_code: [200]
+        timeout: 10
+      register: grafana_test
+      failed_when: false
+      changed_when: false
+
+    # ==========================================================================
+    # DISPLAY RESULTS
+    # ==========================================================================
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ==============================================
+          ✅ Monitoring Stack Deployment Complete!
+          ==============================================
+
+          📊 Container Status:
+          {{ container_status.stdout_lines | join('\n          ') }}
+
+          🌐 Access URLs:
+          {% if grafana_test.status is defined and grafana_test.status == 200 %}
+             ✅ Grafana: http://{{ ansible_default_ipv4.address }}:{{ monitoring.grafana.port }}
+             ✅ Grafana (localhost): http://localhost:{{ monitoring.grafana.port }}
+          {% else %}
+             ⚠️  Grafana not yet ready (may need more time)
+          {% endif %}
+          {% if influxdb_test.status is defined and influxdb_test.status == 200 %}
+             ✅ InfluxDB: http://{{ ansible_default_ipv4.address }}:{{ monitoring.influxdb.port }}
+          {% else %}
+             ⚠️  InfluxDB not yet ready (may need more time)
+          {% endif %}
+
+          🔐 Credentials:
+             Grafana:
+               User: {{ monitoring.grafana.admin_user }}
+               Pass: {{ monitoring.grafana.admin_password }}
+
+             InfluxDB:
+               User: {{ monitoring.influxdb.admin_user }}
+               Pass: {{ monitoring.influxdb.admin_password }}
+               Org: {{ monitoring.influxdb.organization }}
+               Bucket: {{ monitoring.influxdb.bucket }}
+
+          📱 Telegram Alerts:
+          {% if monitoring.telegram.enabled and monitoring.telegram.bot_token != '' %}
+             ✅ Configured and active
+          {% else %}
+             ⚠️  Not configured. Add to config.local.yml:
+             services:
+               core:
+                 monitoring:
+                   telegram:
+                     bot_token: "YOUR_BOT_TOKEN"
+                     chat_id: "YOUR_CHAT_ID"
+          {% endif %}
+
+          📈 Metrics Being Collected:
+             - System: CPU, RAM, Disk, Network, Load
+             - Docker: All containers resource usage
+             - Processes: Top processes by CPU/memory
+             {% if nextcloud is defined %}
+             - Nextcloud: PostgreSQL, Redis metrics
+             {% endif %}
+
+          🔄 Next Steps:
+             1. Open Grafana: http://{{ ansible_default_ipv4.address }}:{{ monitoring.grafana.port }}
+             2. Login with credentials above
+             3. Check pre-loaded dashboards
+             4. Configure Telegram (if not done)
+             5. Test alerts
+
+          ==============================================
