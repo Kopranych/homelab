@@ -109,7 +109,7 @@ services:
 
       # Alert Configuration
       alerts:
-        disk_space_threshold_gb: 750
+        disk_space_threshold_gb: 150
         memory_threshold_percent: 90
         cpu_threshold_percent: 85
         container_restart_threshold: 3

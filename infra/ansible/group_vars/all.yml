@@ -53,8 +53,8 @@ _monitoring_overrides:
   grafana:
     admin_password: "{{ vault_grafana_password | default('changeme_grafana') }}"
   telegram:
-    bot_token: "{{ vault_telegram_bot_token | default('') }}"
-    chat_id: "{{ vault_telegram_chat_id | default('') }}"
+    bot_token: "{{ vault_telegram_bot_token | default(_monitoring_base.telegram.bot_token) }}"
+    chat_id: "{{ vault_telegram_chat_id | default(_monitoring_base.telegram.chat_id) }}"
 
 # Merge base config with overrides
 monitoring: "{{ _monitoring_base | combine(_monitoring_overrides, recursive=True) }}"

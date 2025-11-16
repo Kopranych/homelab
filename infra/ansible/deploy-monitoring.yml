@@ -170,10 +170,31 @@
         mode: '0644'
       become: false
 
-    - name: Generate Grafana alerting configuration
+    # Grafana Alerting Configuration (Contact Points, Policies, Rules)
+    - name: Generate Grafana contact points configuration
       template:
-        src: templates/grafana-alerting.yml.j2
-        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/alerting/telegram.yml"
+        src: templates/grafana-contactpoints.yml.j2
+        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/alerting/contactpoints.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+      when: monitoring.telegram.enabled and monitoring.telegram.bot_token != ''
+
+    - name: Generate Grafana notification policies configuration
+      template:
+        src: templates/grafana-policies.yml.j2
+        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/alerting/policies.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      become: false
+      when: monitoring.telegram.enabled and monitoring.telegram.bot_token != ''
+
+    - name: Generate Grafana alert rules configuration
+      template:
+        src: templates/grafana-rules.yml.j2
+        dest: "{{ monitoring.compose_dir }}/grafana-provisioning/alerting/rules.yml"
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: '0644'
