@@ -803,6 +803,69 @@ echo "✅ Monitoring script created at ~/check-nextcloud.sh"
 
 ## 🐛 Troubleshooting
 
+### Critical: "Configuration was not read or initialized correctly"
+
+**Symptoms:**
+- Error message: "Configuration was not read or initialized correctly, not overwriting /var/www/html/config/config.php"
+- HTTP 503 errors or blank page
+- Web UI not loading properly
+
+**Root Cause:**
+Docker Snap conflicts with Docker CE, creating empty config.php inside container while real config exists on host.
+
+**Quick Diagnosis:**
+```bash
+# Check if config is empty inside container
+docker exec nextcloud-app ls -lh /var/www/html/config/config.php
+# If 0 bytes → problem confirmed
+
+# Check if Docker snap is installed
+snap list docker
+# If found → this is the issue
+```
+
+**Solution:**
+
+```bash
+# 1. Remove Docker Snap
+sudo snap remove --purge docker
+
+# 2. Stop Nextcloud
+cd ~/docker-compose/nextcloud
+docker compose down
+
+# 3. Verify user files are safe (important!)
+sudo ls -la /data/docker/nextcloud/data/
+# You should see your user directories (admin, kopranych, etc.)
+
+# 4. Clear database (files remain safe)
+sudo rm -rf /data/docker/nextcloud/db/*
+
+# 5. Restart Docker CE and deploy Nextcloud
+sudo systemctl restart docker
+docker compose up -d
+
+# 6. Wait and verify
+sleep 30
+docker exec -u www-data nextcloud-app php occ status
+# Should show: installed: true
+
+# 7. Access web UI and scan existing files
+# After setup, run:
+docker exec -u www-data nextcloud-app php occ files:scan --all
+```
+
+**What Gets Lost vs Preserved:**
+- ❌ Lost: User accounts, passwords, app settings (database)
+- ✅ Preserved: All files, photos, documents
+- ✅ Recoverable: Files appear after scanning
+
+**Prevention:**
+- Always use `apt install docker-ce`, never `snap install docker`
+- Remove snap before installing Docker CE: `sudo snap remove docker`
+
+---
+
 ### Error: "Cannot create or write into the data directory"
 
 **Symptoms:**
