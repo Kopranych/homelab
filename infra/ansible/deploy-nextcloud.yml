@@ -290,68 +290,29 @@
         seconds: 30
 
     # ==========================================================================
-    # COPY CERTIFICATES TO TRAEFIK (IF AVAILABLE)
+    # VERIFY CERTIFICATE MOUNTING (OPTIONAL)
     # ==========================================================================
+    # Note: Certificates are now mounted via volume, not copied with docker cp
+    # The docker-compose template includes:
+    #   - {{ nextcloud.certs_dir }}:/certs:ro
+    # So certificates are automatically available in the Traefik container
 
     - name: Check if Traefik container exists
       command: docker ps -q -f name=nextcloud-traefik
       register: traefik_container
       changed_when: false
 
-    - name: Set Traefik container fact
-      set_fact:
-        traefik_container_exists:
-          exists: "{{ traefik_container.stdout != '' }}"
+    - name: Verify certificates are mounted in Traefik container
+      command: docker exec nextcloud-traefik ls -la /certs/
+      register: cert_verification
+      changed_when: false
+      failed_when: false
+      when: certificates_available | default(false) and traefik_container.stdout != ''
 
-    - name: Copy certificates into Traefik container
-      when: certificates_available | default(false) and traefik_container_exists.exists
-      block:
-        - name: Create /certs directory in Traefik container
-          command: docker exec nextcloud-traefik mkdir -p /certs
-          changed_when: true
-
-        - name: Copy certificate file to Traefik
-          command: >
-            docker cp {{ nextcloud.certs_dir }}/{{ tailscale_hostname }}.crt
-            nextcloud-traefik:/certs/
-          changed_when: true
-
-        - name: Copy key file to Traefik
-          command: >
-            docker cp {{ nextcloud.certs_dir }}/{{ tailscale_hostname }}.key
-            nextcloud-traefik:/certs/
-          changed_when: true
-
-        - name: Copy dynamic configuration to Traefik
-          command: >
-            docker cp {{ nextcloud.certs_dir }}/dynamic.yml
-            nextcloud-traefik:/certs/
-          changed_when: true
-
-        - name: Set certificate permissions in container
-          command: >
-            docker exec nextcloud-traefik chmod 644
-            /certs/{{ tailscale_hostname }}.crt
-            /certs/{{ tailscale_hostname }}.key
-            /certs/dynamic.yml
-          changed_when: true
-
-        - name: Verify certificates in container
-          command: docker exec nextcloud-traefik ls -la /certs/
-          register: cert_verification
-          changed_when: false
-
-        - name: Display certificate verification
-          debug:
-            msg: "{{ cert_verification.stdout_lines }}"
-
-        - name: Restart Traefik to load certificates
-          command: docker restart nextcloud-traefik
-          changed_when: true
-
-        - name: Wait for Traefik to reload
-          pause:
-            seconds: 10
+    - name: Display certificate verification
+      debug:
+        msg: "{{ cert_verification.stdout_lines }}"
+      when: certificates_available | default(false) and cert_verification.stdout is defined
 
     # ==========================================================================
     # WAIT FOR NEXTCLOUD INITIALIZATION

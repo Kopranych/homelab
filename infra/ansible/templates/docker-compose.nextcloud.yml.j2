@@ -148,6 +148,9 @@ services:
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+{% if certificates_available | default(false) %}
+      - {{ nextcloud.certs_dir }}:/certs:ro
+{% endif %}
 
     networks:
       - nextcloud-network
