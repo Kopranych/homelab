@@ -64,11 +64,14 @@ services:
       - /var/run/utmp:/var/run/utmp:ro
 
       # Docker socket for container metrics
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring
-    # Run as root with docker group to access Docker socket
-    user: "0:{{ docker_group_id }}"
+    # Run as root and chmod socket to allow telegraf user access
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "chmod 666 /var/run/docker.sock && exec telegraf"]
+    security_opt:
+      - apparmor:unconfined
 
   # ============================================================================
   # Grafana - Visualization & Alerting

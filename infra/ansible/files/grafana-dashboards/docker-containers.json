@@ -49,6 +49,7 @@
               "mode": "off"
             }
           },
+          "displayName": "${__field.labels.container_name}",
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -73,7 +74,7 @@
         "legend": {
           "calcs": ["last", "mean", "max"],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -87,7 +88,7 @@
             "type": "influxdb",
             "uid": "influxdb-homelab"
           },
-          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_cpu\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage_percent\")\n  |> aggregateWindow(every: 30s, fn: mean)",
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_cpu\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage_percent\")\n  |> filter(fn: (r) => r[\"cpu\"] == \"cpu-total\")\n  |> group(columns: [\"container_name\"])\n  |> aggregateWindow(every: 30s, fn: mean, createEmpty: false)",
           "refId": "A"
         }
       ],
@@ -134,6 +135,7 @@
               "mode": "off"
             }
           },
+          "displayName": "${__field.labels.container_name}",
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -158,7 +160,7 @@
         "legend": {
           "calcs": ["last", "mean", "max"],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -172,7 +174,7 @@
             "type": "influxdb",
             "uid": "influxdb-homelab"
           },
-          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_mem\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage\")\n  |> aggregateWindow(every: 30s, fn: mean)",
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_mem\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage\")\n  |> group(columns: [\"container_name\"])\n  |> aggregateWindow(every: 30s, fn: mean, createEmpty: false)",
           "refId": "A"
         }
       ],
@@ -211,9 +213,45 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "container_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Container"
+              },
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "container_status"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Status"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "cpu_percent"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "CPU %"
+              },
               {
                 "id": "unit",
                 "value": "percent"
@@ -221,8 +259,17 @@
               {
                 "id": "custom.cellOptions",
                 "value": {
+                  "mode": "gradient",
                   "type": "gauge"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "max",
+                "value": 100
               }
             ]
           },
@@ -233,8 +280,16 @@
             },
             "properties": [
               {
+                "id": "displayName",
+                "value": "Memory"
+              },
+              {
                 "id": "unit",
                 "value": "bytes"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           }
@@ -255,7 +310,13 @@
           "reducer": ["sum"],
           "show": false
         },
-        "showHeader": true
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Memory"
+          }
+        ]
       },
       "targets": [
         {
@@ -263,7 +324,7 @@
             "type": "influxdb",
             "uid": "influxdb-homelab"
           },
-          "query": "import \"strings\"\n\ncpu = from(bucket: \"metrics\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_cpu\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage_percent\")\n  |> last()\n  |> group(columns: [\"container_name\"])\n  |> keep(columns: [\"container_name\", \"_value\"])\n  |> rename(columns: {_value: \"cpu_percent\"})\n\nmem = from(bucket: \"metrics\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_mem\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage\")\n  |> last()\n  |> group(columns: [\"container_name\"])\n  |> keep(columns: [\"container_name\", \"_value\"])\n  |> rename(columns: {_value: \"memory_bytes\"})\n\nstatus = from(bucket: \"metrics\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_status\")\n  |> filter(fn: (r) => r[\"_field\"] == \"uptime_ns\")\n  |> last()\n  |> group(columns: [\"container_name\"])\n  |> keep(columns: [\"container_name\", \"container_status\"])\n\njoin(\n  tables: {cpu: cpu, mem: mem, status: status},\n  on: [\"container_name\"]\n)",
+          "query": "cpu = from(bucket: \"metrics\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_cpu\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage_percent\")\n  |> filter(fn: (r) => r[\"cpu\"] == \"cpu-total\")\n  |> last()\n  |> group(columns: [\"container_name\"])\n  |> keep(columns: [\"container_name\", \"_value\", \"container_status\"])\n  |> rename(columns: {_value: \"cpu_percent\"})\n\nmem = from(bucket: \"metrics\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_mem\")\n  |> filter(fn: (r) => r[\"_field\"] == \"usage\")\n  |> last()\n  |> group(columns: [\"container_name\"])\n  |> keep(columns: [\"container_name\", \"_value\"])\n  |> rename(columns: {_value: \"memory_bytes\"})\n\njoin(tables: {cpu: cpu, mem: mem}, on: [\"container_name\"])\n  |> group()",
           "refId": "A"
         }
       ],
@@ -310,6 +371,7 @@
               "mode": "off"
             }
           },
+          "displayName": "${__field.labels.container_name} (${__field.labels._field})",
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -334,7 +396,7 @@
         "legend": {
           "calcs": ["last", "mean"],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -348,7 +410,7 @@
             "type": "influxdb",
             "uid": "influxdb-homelab"
           },
-          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_net\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rx_bytes\" or r[\"_field\"] == \"tx_bytes\")\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: 30s, fn: mean)",
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"docker_container_net\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rx_bytes\" or r[\"_field\"] == \"tx_bytes\")\n  |> filter(fn: (r) => r[\"network\"] == \"total\")\n  |> group(columns: [\"container_name\", \"_field\"])\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: 30s, fn: mean, createEmpty: false)",
           "refId": "A"
         }
       ],
@@ -371,6 +433,6 @@
   "timezone": "",
   "title": "Homelab - Docker Containers",
   "uid": "homelab-docker-containers",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
