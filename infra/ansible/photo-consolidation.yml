@@ -1,6 +1,16 @@
 ---
 # Safe Photo Consolidation - Ansible Orchestration
 # Copy first, process copies later - maximum safety approach
+#
+# Run phases step by step:
+#   --tags phase0   Check drives mounted, verify disk space
+#   --tags phase1   Install packages, deploy Python scripts, create venv
+#   --tags phase2   Copy all media files (long-running)
+#   --tags phase3   Analyze duplicates
+#   --tags phase4   Deploy Nextcloud for verification
+#   --tags phase5   Human verification pause
+#   --tags phase6   Final consolidation (requires dry_run: false)
+#   --tags phase7   Status report and completion
 - name: Safe Photo Consolidation - Copy First, Process Later
   hosts: homelab
   gather_facts: yes
@@ -9,136 +19,194 @@
     homelab_config: "{{ lookup('file', playbook_dir + '/../../config.yml') | from_yaml }}"
     photo_config: "{{ homelab_config.photo_consolidation }}"
     infra_config: "{{ homelab_config.infrastructure }}"
-    
+
     # Derived variables
-    data_root: "{{ infra_config.storage.data_root }}"
+    data_root: "{{ infra_config.storage.consolidation_root }}"
     source_drives: "{{ infra_config.storage.source_drives }}"
     script_dir: "{{ playbook_dir }}/../../scripts"
     incoming_dir: "{{ data_root }}/incoming"
-    
+
+    # Python deployment
+    python_deploy_dir: "/opt/photo-consolidator"
+    python_venv_dir: "{{ python_deploy_dir }}/venv"
+    python_bin: "{{ python_venv_dir }}/bin/python"
+    consolidate_cmd: "{{ python_bin }} {{ python_deploy_dir }}/consolidate.py --config {{ python_deploy_dir }}/config.yml"
+
   tasks:
     # ==========================================
     # PHASE 0: PREREQUISITES & SAFETY VALIDATION
     # ==========================================
     - name: Phase 0 - Prerequisites and Safety Validation
       block:
-        - name: Verify Ansible user has required permissions
+        - name: "[Phase 0] Checking sudo permissions..."
           become: yes
           command: whoami
           register: sudo_check
           changed_when: false
 
-        - name: Check source drives are mounted and readable
+        - name: "[Phase 0] Checking source drives are mounted..."
           stat:
             path: "{{ item.path }}"
           register: drive_check
-          failed_when: not drive_check.stat.exists or not drive_check.stat.isdir
           loop: "{{ source_drives }}"
-          
-        - name: Calculate total source drive space requirements
-          shell: |
-            total_size=0
-            {% for drive in source_drives %}
-            if [ -d "{{ drive.path }}" ]; then
-              drive_size=$(du -sb "{{ drive.path }}" 2>/dev/null | awk '{print $1}' || echo 0)
-              total_size=$((total_size + drive_size))
-              echo "Source {{ drive.path }}: $(numfmt --to=iec $drive_size)"
-            fi
-            {% endfor %}
-            echo "TOTAL_SOURCE_SIZE:$(numfmt --to=iec $total_size)"
-            echo "TOTAL_SOURCE_BYTES:$total_size"
-          register: source_space_calc
-          changed_when: false
 
-        - name: Verify sufficient target space for safe copy operation
+        - name: Fail if source drives are not mounted
+          fail:
+            msg: >-
+              Source drive {{ item.item.path }} ({{ item.item.label }}) is not mounted.
+              Mount your NTFS drives read-only before running this playbook.
+              See docs/05-photo-consolidation.md "Mounting Source Drives" section.
+              Example: sudo mount -t ntfs-3g -o ro,noexec /dev/sdX1 {{ item.item.path }}
+          when: not item.stat.exists or not item.stat.isdir
+          loop: "{{ drive_check.results }}"
+          loop_control:
+            label: "{{ item.item.path }}"
+
+        - name: "[Phase 0] All source drives found"
+          debug:
+            msg: "{{ source_drives | map(attribute='path') | list | join(', ') }}"
+
+        - name: "[Phase 0] Checking disk space..."
           shell: |
+            source_bytes=0
+            {% for drive in source_drives %}
+            used=$(df -B1 "{{ drive.path }}" | awk 'NR==2 {print $3}')
+            source_bytes=$((source_bytes + used))
+            echo "Source {{ drive.path }} ({{ drive.label }}): $(numfmt --to=iec $used)"
+            {% endfor %}
+
             target_avail=$(df -B1 {{ data_root }} | awk 'NR==2 {print $4}')
-            safety_buffer_gb={{ photo_config.safety.min_free_space_gb }}
-            safety_buffer_bytes=$((safety_buffer_gb * 1024 * 1024 * 1024))
-            
-            source_bytes={{ source_space_calc.stdout_lines | select('match', '^TOTAL_SOURCE_BYTES:') | first | regex_replace('^TOTAL_SOURCE_BYTES:', '') }}
-            
-            if [ $((source_bytes + safety_buffer_bytes)) -gt $target_avail ]; then
-              echo "INSUFFICIENT_SPACE"
-              echo "Need: $(numfmt --to=iec $((source_bytes + safety_buffer_bytes)))"
-              echo "Available: $(numfmt --to=iec $target_avail)"
-              echo "Safety buffer: ${safety_buffer_gb}GB"
+            buffer_bytes=$(( {{ photo_config.safety.min_free_space_gb }} * 1024 * 1024 * 1024 ))
+            needed=$((source_bytes + buffer_bytes))
+
+            echo "---"
+            echo "Total source: $(numfmt --to=iec $source_bytes)"
+            echo "Safety buffer: {{ photo_config.safety.min_free_space_gb }}GB"
+            echo "Needed: $(numfmt --to=iec $needed)"
+            echo "Available on {{ data_root }}: $(numfmt --to=iec $target_avail)"
+
+            if [ $needed -gt $target_avail ]; then
+              echo "RESULT: INSUFFICIENT SPACE"
               exit 1
-            else
-              echo "SPACE_OK"
-              echo "Source: $(numfmt --to=iec $source_bytes)"
-              echo "Available: $(numfmt --to=iec $target_avail)"
-              echo "Buffer: ${safety_buffer_gb}GB"
             fi
+            echo "RESULT: OK"
           register: space_validation
           changed_when: false
 
-        - name: Display space validation results
+        - name: "[Phase 0] Space validation results"
           debug:
             msg: "{{ space_validation.stdout_lines }}"
+
+        - name: "[Phase 0] Prerequisites OK - ready to proceed"
+          debug:
+            msg: "All checks passed. Run --tags phase1 to install packages and deploy Python scripts."
 
       tags: [prerequisites, safety, phase0]
 
     # ==========================================
-    # PHASE 1: SYSTEM PREPARATION
+    # PHASE 1: SYSTEM PREPARATION & PYTHON DEPLOY
     # ==========================================
-    - name: Phase 1 - System Preparation for Safe Copy Operation
+    - name: Phase 1 - System Preparation and Python Deployment
       block:
-        - name: Install required packages for photo consolidation
+        - name: "[Phase 1] Installing required system packages..."
           apt:
             name:
-              - rsync           # Robust file copying with verification
-              - pv              # Progress viewer for copy operations
-              - parallel        # Parallel processing
-              - docker.io       # For Nextcloud deployment
-              - docker-compose  # Container orchestration
-              - exiftool        # EXIF metadata analysis
-              - imagemagick     # Image processing and analysis
-              - ffmpeg          # Video analysis
-              - yq              # YAML processing for configuration
-              - tree            # Directory structure display
+              - rsync
+              - pv
+              - parallel
+              - exiftool
+              - imagemagick
+              - ffmpeg
+              - yq
+              - tree
+              - python3-venv
+              - python3-dev
+              - build-essential
             state: present
             update_cache: yes
           become: yes
 
-        - name: Create safe copy workflow directory structure
+        - name: "[Phase 1] Fixing ownership of {{ data_root }}..."
+          file:
+            path: "{{ data_root }}"
+            state: directory
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            recurse: yes
+          become: yes
+
+        - name: "[Phase 1] Creating directory structure on {{ data_root }}..."
           file:
             path: "{{ data_root }}/{{ item }}"
             state: directory
             owner: "{{ ansible_user }}"
             group: "{{ ansible_user }}"
             mode: '0755'
+          become: yes
           loop:
-            - incoming                    # All copied files
-            - manifests                   # SHA256 catalogs
-            - duplicates/groups           # Duplicate group analysis
-            - duplicates/reports          # Summary reports
-            - quality/cache               # Quality scoring cache
-            - final                       # Clean final collection
-            - backup/consolidation        # Backup of removed files
-            - logs                        # Process logs
-            - nextcloud                   # Nextcloud data
+            - incoming
+            - manifests
+            - duplicates/groups
+            - duplicates/reports
+            - final
+            - logs
 
-        - name: Deploy configuration management scripts
-          copy:
-            src: "{{ script_dir }}/common/config.sh"
-            dest: "/tmp/homelab_config.sh"
+        - name: "[Phase 1] Creating Python deployment directory..."
+          file:
+            path: "{{ python_deploy_dir }}"
+            state: directory
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
             mode: '0755'
-          
-        - name: Validate centralized configuration
-          shell: |
-            export HOMELAB_ROOT="{{ playbook_dir }}/../.."
-            source /tmp/homelab_config.sh
-            validate_config
-            load_common_config
-            show_config_summary
-          register: config_validation
-          environment:
-            HOMELAB_ROOT: "{{ playbook_dir }}/../.."
+          become: yes
 
-        - name: Display configuration summary
+        - name: "[Phase 1] Deploying Python consolidation scripts..."
+          synchronize:
+            src: "{{ script_dir }}/media/"
+            dest: "{{ python_deploy_dir }}/"
+            delete: yes
+            rsync_opts:
+              - "--exclude=__pycache__"
+              - "--exclude=*.pyc"
+              - "--exclude=.git"
+
+        - name: "[Phase 1] Deploying config.yml..."
+          copy:
+            src: "{{ playbook_dir }}/../../config.yml"
+            dest: "{{ python_deploy_dir }}/config.yml"
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: '0644'
+
+        - name: "[Phase 1] Creating Python virtual environment..."
+          command: python3 -m venv {{ python_venv_dir }}
+          args:
+            creates: "{{ python_venv_dir }}/bin/python"
+
+        - name: "[Phase 1] Installing Python dependencies in venv..."
+          command: "{{ python_venv_dir }}/bin/pip install -r {{ python_deploy_dir }}/requirements.txt"
+          register: pip_install
+          changed_when: "'Successfully installed' in pip_install.stdout"
+
+        - name: "[Phase 1] Verifying Python CLI loads correctly..."
+          command: "{{ consolidate_cmd }} --help"
+          register: cli_check
+          changed_when: false
+
+        - name: "[Phase 1] Configuration summary"
           debug:
-            msg: "{{ config_validation.stdout_lines }}"
+            msg:
+              - "Data root: {{ data_root }}"
+              - "Incoming dir: {{ incoming_dir }}"
+              - "Python deploy dir: {{ python_deploy_dir }}"
+              - "Source drives: {{ source_drives | length }}"
+              - "Dry run: {{ photo_config.process.dry_run }}"
+              - "Parallel jobs: {{ photo_config.process.parallel_jobs }}"
+              - "Min free space: {{ photo_config.safety.min_free_space_gb }}GB"
+
+        - name: "[Phase 1] System preparation complete"
+          debug:
+            msg: "Packages installed, Python deployed. Run --tags phase2 to start copying files."
 
       tags: [setup, install, phase1]
 
@@ -147,27 +215,17 @@
     # ==========================================
     - name: Phase 2 - Safe Copy All Media Files
       block:
-        - name: Deploy safe copy script
-          copy:
-            src: "{{ script_dir }}/media/copy_all_media.sh"
-            dest: "/tmp/copy_all_media.sh"
-            mode: '0755'
-
-        - name: Execute safe copy operation from all source drives
-          shell: |
-            export HOMELAB_ROOT="{{ playbook_dir }}/../.."
-            /tmp/copy_all_media.sh
+        - name: "[Phase 2] Copying media files from all source drives (this may take hours)..."
+          command: "{{ consolidate_cmd }} copy --no-dry-run --progress"
           register: copy_result
-          environment:
-            PATH: "{{ ansible_env.PATH }}"
           async: 14400  # 4 hours timeout for large copy operations
           poll: 60      # Check every minute
 
-        - name: Display copy operation results
+        - name: "[Phase 2] Copy output (last 30 lines)"
           debug:
-            msg: "{{ copy_result.stdout_lines[-20:] | default(['No output']) }}"
+            msg: "{{ copy_result.stdout_lines[-30:] | default(['No output']) }}"
 
-        - name: Verify files were successfully copied to incoming directory
+        - name: "[Phase 2] Counting copied files in {{ incoming_dir }}..."
           find:
             paths: "{{ incoming_dir }}"
             file_type: file
@@ -179,13 +237,19 @@
             msg: "No files were copied to {{ incoming_dir }}. Check copy operation logs."
           when: copied_files.files | length == 0
 
-        - name: Display copy success summary
+        - name: "[Phase 2] Checking copied data size..."
+          shell: du -sh {{ incoming_dir }}
+          register: incoming_size
+          changed_when: false
+
+        - name: "[Phase 2] Copy complete"
           debug:
-            msg: 
-              - "✅ SAFE COPY OPERATION COMPLETE"
-              - "{{ copied_files.files | length }} files successfully copied"
+            msg:
+              - "{{ copied_files.files | length }} files copied"
+              - "Size: {{ incoming_size.stdout }}"
               - "Location: {{ incoming_dir }}"
-              - "🔒 ORIGINAL DRIVES NOW SAFE TO DISCONNECT"
+              - "Original drives are safe to disconnect."
+              - "Run --tags phase3 to analyze duplicates."
 
       tags: [copy, safe_copy, phase2]
 
@@ -194,33 +258,41 @@
     # ==========================================
     - name: Phase 3 - Duplicate Analysis on Copied Files Only
       block:
-        - name: Deploy copied files analysis script
-          copy:
-            src: "{{ script_dir }}/media/analyze_copied_files.sh"
-            dest: "/tmp/analyze_copied_files.sh"
-            mode: '0755'
+        - name: "[Phase 3] Checking incoming directory..."
+          find:
+            paths: "{{ incoming_dir }}"
+            file_type: file
+            recurse: yes
+          register: incoming_files_check
 
-        - name: Run duplicate analysis on copied files
-          shell: |
-            export HOMELAB_ROOT="{{ playbook_dir }}/../.."
-            /tmp/analyze_copied_files.sh
+        - name: Fail if no files found in incoming directory
+          fail:
+            msg: >-
+              No files found in {{ incoming_dir }}.
+              Run Phase 2 (copy) first: --tags phase2
+          when: incoming_files_check.files | length == 0
+
+        - name: "[Phase 3] Found {{ incoming_files_check.files | length }} files to analyze"
+          debug:
+            msg: "Starting duplicate analysis..."
+
+        - name: "[Phase 3] Running duplicate analysis (this may take up to 1 hour)..."
+          command: "{{ consolidate_cmd }} analyze"
           register: analysis_result
-          environment:
-            PATH: "{{ ansible_env.PATH }}"
           async: 3600  # 1 hour timeout
           poll: 30
 
-        - name: Display analysis results
+        - name: "[Phase 3] Analysis output (last 20 lines)"
           debug:
-            msg: "{{ analysis_result.stdout_lines[-15:] | default(['No output']) }}"
+            msg: "{{ analysis_result.stdout_lines[-20:] | default(['No output']) }}"
 
-        - name: Check for duplicate groups
+        - name: "[Phase 3] Counting duplicate groups..."
           find:
             paths: "{{ data_root }}/duplicates/groups"
             patterns: "group_*.txt"
           register: duplicate_groups
 
-        - name: Display duplicate analysis summary
+        - name: "[Phase 3] Reading analysis report..."
           shell: |
             if [ -f "{{ data_root }}/duplicates/reports/copied_files_analysis.txt" ]; then
               echo "=== DUPLICATE ANALYSIS RESULTS ==="
@@ -231,25 +303,31 @@
           register: duplicate_summary
           changed_when: false
 
-        - name: Show duplicate analysis summary
+        - name: "[Phase 3] Analysis summary"
           debug:
             msg: "{{ duplicate_summary.stdout_lines }}"
 
+        - name: "[Phase 3] Analysis complete"
+          debug:
+            msg:
+              - "{{ duplicate_groups.files | length }} duplicate groups found"
+              - "Reports: {{ data_root }}/duplicates/reports/"
+              - "Run --tags phase4 to deploy Nextcloud for visual verification."
+
       tags: [analysis, duplicates, phase3]
-      when: copied_files.files | length > 0
 
     # ==========================================
     # PHASE 4: NEXTCLOUD VERIFICATION SETUP
     # ==========================================
     - name: Phase 4 - Deploy Nextcloud for Human Verification
       block:
-        - name: Deploy Nextcloud verification setup script
+        - name: "[Phase 4] Deploying Nextcloud verification setup..."
           copy:
             src: "{{ script_dir }}/setup/setup_nextcloud_verification.sh"
             dest: "/tmp/setup_nextcloud_verification.sh"
             mode: '0755'
 
-        - name: Execute Nextcloud verification setup
+        - name: "[Phase 4] Running Nextcloud setup..."
           shell: |
             export HOMELAB_ROOT="{{ playbook_dir }}/../.."
             /tmp/setup_nextcloud_verification.sh
@@ -257,11 +335,11 @@
           environment:
             PATH: "{{ ansible_env.PATH }}"
 
-        - name: Display Nextcloud access information
+        - name: "[Phase 4] Nextcloud setup output"
           debug:
             msg: "{{ nextcloud_setup.stdout_lines[-30:] | default(['Setup in progress']) }}"
 
-        - name: Wait for Nextcloud to be ready
+        - name: "[Phase 4] Waiting for Nextcloud to become available..."
           uri:
             url: "http://localhost:8080"
             method: GET
@@ -271,54 +349,57 @@
           delay: 10
           ignore_errors: yes
 
-        - name: Display verification access details
+        - name: "[Phase 4] Nextcloud ready"
           debug:
             msg:
-              - "🌐 NEXTCLOUD VERIFICATION READY"
               - "Access: http://{{ ansible_default_ipv4.address }}:8080"
-              - "Login with credentials shown above"
               - "Navigate to Files > verification"
               - "Review: incoming/ (your photos) and duplicates/ (analysis)"
+              - "Run --tags phase5,phase6 when ready to consolidate."
 
       tags: [verification, nextcloud, phase4]
-      when: duplicate_groups is defined
 
     # ==========================================
     # PHASE 5: HUMAN VERIFICATION PAUSE
     # ==========================================
     - name: Phase 5 - Human Verification Checkpoint
       block:
-        - name: Pause for human verification via Nextcloud
+        - name: "[Phase 5] Waiting for human verification..."
           pause:
             prompt: |
-              
+
               ====================================================
-              🔍 HUMAN VERIFICATION REQUIRED
+              HUMAN VERIFICATION REQUIRED
               ====================================================
-              
-              ✅ All photos safely copied to {{ incoming_dir }}
-              ✅ Duplicate analysis completed
-              ✅ Nextcloud verification interface ready
-              
-              📋 VERIFICATION STEPS:
+
+              All photos safely copied to {{ incoming_dir }}
+              Duplicate analysis completed
+              Nextcloud verification interface ready
+
+              VERIFICATION STEPS:
               1. Browse to: http://{{ ansible_default_ipv4.address }}:8080
               2. Login with the credentials shown above
               3. Go to Files > verification
               4. Review your photos in incoming/
               5. Check duplicate analysis in duplicates/reports/
               6. Spot-check some duplicate groups
-              
-              🔒 SAFETY REMINDER:
-              • Your original drives are COMPLETELY UNTOUCHED
-              • You're reviewing COPIES in {{ incoming_dir }}
-              • Original drives can be disconnected safely
-              
-              ⏳ Take your time to verify everything looks correct.
-              
+
+              SAFETY REMINDER:
+              - Your original drives are COMPLETELY UNTOUCHED
+              - You are reviewing COPIES in {{ incoming_dir }}
+              - Original drives can be disconnected safely
+
+              Take your time to verify everything looks correct.
+
               Press ENTER when ready to proceed with final consolidation,
               or Ctrl+C to abort and keep everything as-is.
               ====================================================
           when: not (photo_config.process.dry_run | default(true) | bool)
+
+        - name: "[Phase 5] Skipped - dry_run is enabled"
+          debug:
+            msg: "Set dry_run: false in config.yml to enable verification pause and consolidation."
+          when: photo_config.process.dry_run | default(true) | bool
 
       tags: [verification, pause, phase5]
 
@@ -327,141 +408,120 @@
     # ==========================================
     - name: Phase 6 - Final Consolidation of Copied Files
       block:
-        - name: Deploy final consolidation script
-          copy:
-            src: "{{ script_dir }}/media/consolidate_copied_files.sh"
-            dest: "/tmp/consolidate_copied_files.sh"
-            mode: '0755'
+        - name: "[Phase 6] Checking for duplicate analysis results..."
+          find:
+            paths: "{{ data_root }}/duplicates/groups"
+            patterns: "group_*.txt"
+          register: duplicate_groups_check
 
-        - name: Execute final consolidation on copied files
-          shell: |
-            export HOMELAB_ROOT="{{ playbook_dir }}/../.."
-            /tmp/consolidate_copied_files.sh
+        - name: Fail if no duplicate analysis found
+          fail:
+            msg: >-
+              No duplicate analysis found in {{ data_root }}/duplicates/groups/.
+              Run Phase 3 (analysis) first: --tags phase3
+          when: duplicate_groups_check.files | length == 0
+
+        - name: "[Phase 6] Found {{ duplicate_groups_check.files | length }} duplicate groups to process"
+          debug:
+            msg: "Starting consolidation..."
+          when: not (photo_config.process.dry_run | default(true) | bool)
+
+        - name: "[Phase 6] Running final consolidation..."
+          command: "{{ consolidate_cmd }} consolidate --no-dry-run"
           register: consolidation_result
           when: not (photo_config.process.dry_run | default(true) | bool)
 
-        - name: Display consolidation results
+        - name: "[Phase 6] Skipped - dry_run is enabled"
+          debug:
+            msg: "Set dry_run: false in config.yml to run the actual consolidation."
+          when: photo_config.process.dry_run | default(true) | bool
+
+        - name: "[Phase 6] Consolidation output"
           debug:
             msg: "{{ consolidation_result.stdout_lines[-20:] | default(['Skipped - dry run mode']) }}"
 
-        - name: Generate final completion summary
+        - name: "[Phase 6] Generating summary..."
           shell: |
             final_count=$(find {{ data_root }}/final -type f 2>/dev/null | wc -l || echo 0)
             final_size=$(du -sh {{ data_root }}/final 2>/dev/null | awk '{print $1}' || echo "0B")
-            
-            cat << EOF
-            🎉 =============================================
-            🎉 SAFE PHOTO CONSOLIDATION COMPLETE!
-            🎉 =============================================
-            ✅ Final collection: $final_count files ($final_size)
-            ✅ Location: {{ data_root }}/final/
-            ✅ Original drives: Safe and untouched
-            ✅ Duplicates: Intelligently removed
-            ✅ Quality: Best versions preserved
-            
-            📁 Next Steps:
-            • Review final collection in {{ data_root }}/final/
-            • Set up photo management (Immich, PhotoPrism)
-            • Format original drives for Phase 7 Storage Setup
-            • Configure automated backups
-            
-            🔒 Your original drives can now be safely formatted!
-            =============================================
-            EOF
+            incoming_count=$(find {{ incoming_dir }} -type f 2>/dev/null | wc -l || echo 0)
+            incoming_size=$(du -sh {{ incoming_dir }} 2>/dev/null | awk '{print $1}' || echo "0B")
+
+            echo "=== CONSOLIDATION SUMMARY ==="
+            echo "Incoming: $incoming_count files ($incoming_size)"
+            echo "Final:    $final_count files ($final_size)"
+            if [ "$incoming_count" -gt 0 ] && [ "$final_count" -gt 0 ]; then
+              saved=$((incoming_count - final_count))
+              echo "Removed:  $saved duplicate files"
+            fi
+            echo "Location: {{ data_root }}/final/"
+            echo "Original drives: safe and untouched"
           register: final_summary
           changed_when: false
 
-        - name: Display final success summary
+        - name: "[Phase 6] Results"
           debug:
             msg: "{{ final_summary.stdout_lines }}"
 
       tags: [consolidation, final, phase6]
-      when: duplicate_groups is defined
 
     # ==========================================
-    # PHASE 7: CLEANUP & COMPLETION
+    # PHASE 7: STATUS & COMPLETION
     # ==========================================
-    - name: Phase 7 - Cleanup and Completion
+    - name: Phase 7 - Status and Completion
       block:
-        - name: Generate comprehensive completion report
+        - name: "[Phase 7] Running status check..."
+          command: "{{ consolidate_cmd }} status"
+          register: status_result
+          changed_when: false
+
+        - name: "[Phase 7] Current status"
+          debug:
+            msg: "{{ status_result.stdout_lines }}"
+
+        - name: "[Phase 7] Generating completion report..."
           shell: |
-            report_file="{{ data_root }}/logs/ansible_consolidation_complete_$(date +%Y%m%d_%H%M%S).txt"
-            
+            report_file="{{ data_root }}/logs/consolidation_report_$(date +%Y%m%d_%H%M%S).txt"
+
             cat > "$report_file" << EOL
-            === ANSIBLE SAFE PHOTO CONSOLIDATION - COMPLETION REPORT ===
+            === PHOTO CONSOLIDATION REPORT ===
             Completed: $(date)
-            Orchestrator: Ansible
             Server: {{ inventory_hostname }}
-            
-            === PROCESS SUMMARY ===
-            ✅ Strategy: Copy-first approach (maximum safety)
-            ✅ Source drives: {{ source_drives | length }} drives processed
-            ✅ Files copied: $(find {{ incoming_dir }} -type f | wc -l) files
-            ✅ Duplicates found: $(find {{ data_root }}/duplicates/groups -name "group_*.txt" | wc -l) groups
-            ✅ Human verification: Completed via Nextcloud
-            ✅ Final consolidation: $(if [ -d "{{ data_root }}/final" ]; then echo "Completed"; else echo "Skipped (dry run)"; fi)
-            
-            === SAFETY ACHIEVEMENTS ===
-            🔒 Original drives: NEVER MODIFIED throughout entire process
-            📁 Work performed: Only on copies in {{ incoming_dir }}
-            ✅ Verification: Human confirmation via web interface
-            💾 Quality preserved: RAW > high-res JPEG > compressed
-            📋 Audit trail: Complete logs in {{ data_root }}/logs/
-            
-            === READY FOR NEXT PHASE ===
-            • Photo consolidation: ✅ COMPLETE
-            • Original drives: Ready for formatting
-            • Phase 7 Storage Setup: Ready to proceed
-            • Photo management: Ready for deployment
-            
-            STATUS: ✅ ANSIBLE ORCHESTRATION SUCCESS
+
+            Source drives: {{ source_drives | length }}
+            {% for drive in source_drives %}
+            - {{ drive.path }} ({{ drive.label }})
+            {% endfor %}
+
+            Files copied: $(find {{ incoming_dir }} -type f 2>/dev/null | wc -l)
+            Duplicate groups: $(find {{ data_root }}/duplicates/groups -name "group_*.txt" 2>/dev/null | wc -l)
+            Final collection: $(find {{ data_root }}/final -type f 2>/dev/null | wc -l) files
+
+            Original drives: NEVER MODIFIED
             EOL
-            
-            echo "Report generated: $report_file"
+
+            echo "Report saved: $report_file"
             cat "$report_file"
           register: completion_report
+          changed_when: false
 
-        - name: Display completion report
+        - name: "[Phase 7] Completion report"
           debug:
             msg: "{{ completion_report.stdout_lines }}"
 
-        - name: Cleanup temporary deployment files
+        - name: "[Phase 7] Cleaning up temporary files..."
           file:
-            path: "/tmp/{{ item }}"
+            path: "/tmp/setup_nextcloud_verification.sh"
             state: absent
-          loop:
-            - homelab_config.sh
-            - copy_all_media.sh
-            - analyze_copied_files.sh
-            - setup_nextcloud_verification.sh
-            - consolidate_copied_files.sh
+
+        - name: "[Phase 7] Done"
+          debug:
+            msg: "Consolidation workflow complete. Python scripts deployed at {{ python_deploy_dir }}."
 
       tags: [cleanup, completion, phase7]
       always:
         - name: Ensure cleanup runs even on failure
           file:
-            path: "/tmp/{{ item }}"
+            path: "/tmp/setup_nextcloud_verification.sh"
             state: absent
-          loop:
-            - homelab_config.sh
-            - copy_all_media.sh
-            - analyze_copied_files.sh
-            - setup_nextcloud_verification.sh
-            - consolidate_copied_files.sh
           ignore_errors: yes
-
-  handlers:
-    - name: display_original_drive_safety_reminder
-      debug:
-        msg: |
-          🔒 ===============================================
-          🔒 ORIGINAL DRIVE SAFETY REMINDER
-          🔒 ===============================================
-          
-          Throughout this ENTIRE process:
-          • Your original drives were NEVER modified
-          • All work performed on COPIES only
-          • Original drives can be safely disconnected
-          • Ready for formatting for Phase 7 Storage Setup
-          
-          🔒 ===============================================

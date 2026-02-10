@@ -10,23 +10,16 @@ contactPoints:
   - orgId: 1
     name: telegram-homelab
     receivers:
-      - uid: telegram-homelab
+      - uid: tg-homelab
         type: telegram
         settings:
-          bottoken: {{ monitoring.telegram.bot_token }}
+          bottoken: "{{ monitoring.telegram.bot_token }}"
           chatid: "{{ monitoring.telegram.chat_id }}"
           message: |
-            {% raw %}🚨 *Alert: {{ .GroupLabels.alertname }}*
-
-            📍 *Instance:* {{ .GroupLabels.instance }}
-            ⏰ *Time:* {{ .StartsAt.Format "2006-01-02 15:04:05" }}
-
+            {% raw %}{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}
             {{ range .Alerts }}
-            *Status:* {{ .Status }}
-            {{ if .Annotations.summary }}*Summary:* {{ .Annotations.summary }}{{ end }}
-            {{ if .Annotations.description }}*Description:* {{ .Annotations.description }}{{ end }}
-            {{ if .DashboardURL }}[View Dashboard]({{ .DashboardURL }}){{ end }}
+            {{ if .Labels.container_name }}Container: {{ .Labels.container_name }}{{ end }}
+            {{ .Annotations.summary }}
+            {{ .Annotations.description }}
             {{ end }}{% endraw %}
-          parse_mode: Markdown
-          disable_notification: false
         disableResolveMessage: false

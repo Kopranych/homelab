@@ -31,6 +31,9 @@ infrastructure:
   storage:
     # Main data directory
     data_root: "/data"
+
+    # Photo consolidation working directory
+    consolidation_root: "/data/photo-consolidation"
     
     # Partition layout
     partitions:
@@ -40,16 +43,20 @@ infrastructure:
       data: "/data"       # 911GB
       swap: "swap"        # 16GB
     
-    # Source drives for photo consolidation
+    # Source drives for photo consolidation (mounted read-only with ntfs-3g)
     source_drives:
-      - path: "/media/sdb1"
-        label: "old-ssd-1"
-        size: "512GB"
-        filesystem: "ntfs"  # Windows formatted
-      - path: "/media/sdc1"
-        label: "old-external-1"
-        size: "1TB"
-        filesystem: "ntfs"  # Windows formatted
+      - path: "/media/multimedia"
+        label: "Multimedia"
+        device: "/dev/sdb3"
+        uuid: "78BEC248BEC1FE9E"
+        size: "293GB"
+        filesystem: "ntfs"
+      - path: "/media/windows-main"
+        label: "windows-main"
+        device: "/dev/sda3"
+        uuid: "D0EEF68DEEF66ADC"
+        size: "440GB"
+        filesystem: "ntfs"
 
 # ====================
 # SERVICES & APPLICATIONS
@@ -121,13 +128,7 @@ services:
       port: 2283
       upload_location: "/data/photos/immich"
       database: "postgresql"
-    
-    # Photo consolidation settings
-    consolidation:
-      source_drives: "{{ infrastructure.storage.source_drives }}"
-      target_directory: "/data/photos/consolidated"
-      backup_directory: "/data/backup/photos"
-      
+
   # Development Environment
   development:
     # Java Development

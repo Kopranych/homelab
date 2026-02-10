@@ -42,9 +42,6 @@ python3 consolidate.py workflow                      # Complete workflow
 # Option 2: Complete automation via Ansible (recommended for production)
 screen -S photo-consolidation
 ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolidation.yml
-
-# Option 3: Legacy bash scripts (fallback)
-./scripts/media/copy_all_media.sh && ./scripts/media/analyze_copied_files.sh && ./scripts/media/consolidate_copied_files.sh
 ```
 
 #### **📖 Complete Guide**
@@ -97,9 +94,9 @@ homelab/
 │   ├── common/
 │   │   └── config.sh                  # Configuration library
 │   ├── media/
-│   │   ├── copy_all_media.sh          # Safe copy from old drives
-│   │   ├── analyze_copied_files.sh    # Duplicate analysis
-│   │   └── consolidate_copied_files.sh # Final consolidation
+│   │   ├── consolidate.py             # Python CLI entry point
+│   │   ├── photo_consolidator/        # Python package
+│   │   └── tests/                     # Unit tests
 │   └── setup/
 │       └── setup_nextcloud_verification.sh # Web verification interface
 ├── infra/ansible/
@@ -123,8 +120,8 @@ nano config.local.yml  # Add your server details, drive paths, etc.
 ### 2. **Photo Consolidation**
 ```bash
 # Start with the safe copy operation
-./scripts/media/copy_all_media.sh
-# Follow the prompts for each phase
+cd scripts/media && pip3 install -r requirements.txt
+python3 consolidate.py workflow
 ```
 
 ### 3. **Web Verification**

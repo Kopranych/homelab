@@ -26,11 +26,13 @@
   handlers:
     - name: Restart Telegraf
       command: docker restart monitoring-telegraf
-      when: telegraf_container_exists.exists | default(false)
+      become: false
+      listen: "restart telegraf"
 
     - name: Restart Grafana
       command: docker restart monitoring-grafana
-      when: grafana_container_exists.exists | default(false)
+      become: false
+      listen: "restart grafana"
 
   pre_tasks:
     # ==========================================================================
@@ -142,6 +144,7 @@
         group: "{{ ansible_user }}"
         mode: '0644'
       become: false
+      notify: restart telegraf
 
     - name: Generate InfluxDB initialization script
       template:
@@ -160,6 +163,7 @@
         group: "{{ ansible_user }}"
         mode: '0644'
       become: false
+      notify: restart grafana
 
     - name: Generate Grafana dashboard provisioning
       template:
@@ -169,6 +173,7 @@
         group: "{{ ansible_user }}"
         mode: '0644'
       become: false
+      notify: restart grafana
 
     # Grafana Alerting Configuration (Contact Points, Policies, Rules)
     - name: Generate Grafana contact points configuration
@@ -180,6 +185,7 @@
         mode: '0644'
       become: false
       when: monitoring.telegram.enabled and monitoring.telegram.bot_token != ''
+      notify: restart grafana
 
     - name: Generate Grafana notification policies configuration
       template:
@@ -190,6 +196,7 @@
         mode: '0644'
       become: false
       when: monitoring.telegram.enabled and monitoring.telegram.bot_token != ''
+      notify: restart grafana
 
     - name: Generate Grafana alert rules configuration
       template:
@@ -200,6 +207,7 @@
         mode: '0644'
       become: false
       when: monitoring.telegram.enabled and monitoring.telegram.bot_token != ''
+      notify: restart grafana
 
     - name: Generate docker-compose.yml from template
       template:

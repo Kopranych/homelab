@@ -46,7 +46,7 @@ class PhotoConsolidator:
             config: Configuration instance
         """
         self.config = config
-        self.data_root = Path(config.get_data_root())
+        self.data_root = Path(config.get_consolidation_root())
         self.incoming_dir = self.data_root / "incoming"
         self.duplicates_dir = self.data_root / "duplicates"
         self.final_dir = self.data_root / "final"
@@ -128,23 +128,31 @@ class PhotoConsolidator:
         files_to_remove = []
         best_file = None
         
-        with open(group_file, 'r') as f:
-            content = f.read()
-            lines = content.split('\n')
-            
+        with open(group_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+            current_action = None
             for line in lines:
                 line = line.strip()
-                
-                # Find KEEP file (best quality)
-                if 'KEEP' in line and 'Full:' in line:
-                    path_start = line.find('Full: ') + 6
-                    best_file = line[path_start:].strip()
-                
-                # Find REMOVE files
-                elif 'REMOVE' in line and 'Full:' in line:
-                    path_start = line.find('Full: ') + 6
-                    remove_file = line[path_start:].strip()
-                    files_to_remove.append(remove_file)
+
+                # Detect action lines: "[1] KEEP - Score: ..." or "[2] REMOVE - Score: ..."
+                if 'Score:' in line:
+                    if 'KEEP' in line:
+                        current_action = 'KEEP'
+                    elif 'REMOVE' in line:
+                        current_action = 'REMOVE'
+                    else:
+                        current_action = None
+
+                # Extract path from "Full: /path/to/file" lines
+                elif 'Full:' in line and current_action:
+                    path_start = line.find('Full:') + 5
+                    file_path = line[path_start:].strip()
+                    if current_action == 'KEEP':
+                        best_file = file_path
+                    elif current_action == 'REMOVE':
+                        files_to_remove.append(file_path)
+                    current_action = None
         
         if not best_file:
             logger.warning(f"No best file found in group {group_file}")

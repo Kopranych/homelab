@@ -36,23 +36,157 @@ This guide walks you through safely consolidating photos and videos from multipl
 ### **Prerequisites**
 - Mini PC with Ubuntu Server 22.04 LTS
 - `/data` partition with sufficient space (see space calculation below)
-- Old Windows drives mounted (e.g., `/media/sdb1`, `/media/sdc1`)
-- Basic system setup completed (Phases 1-3) ✅
-- Nextcloud verification interface installed (Phase 4) ✅
-- Python 3.8+ available on mini PC (Ubuntu 22.04 includes Python 3.10) ✅
-- Ansible configured on laptop for remote execution (optional) ✅
+- Old Windows drives connected and mounted read-only (see **Mounting Source Drives** below)
+- Basic system setup completed (Phases 1-3)
+- Python 3.8+ available on mini PC (Ubuntu 22.04 includes Python 3.10)
+- Ansible configured on laptop for remote execution (optional)
+
+### **Mounting Source Drives (NTFS/Windows)**
+
+Old Windows-formatted drives must be mounted **read-only** before running the consolidation. This prevents any accidental writes to the original data.
+
+#### Step 1: Install NTFS support
+```bash
+sudo apt update && sudo apt install -y ntfs-3g
+```
+
+#### Step 2: Connect drives and identify them
+Physically connect the drives to the mini PC (USB or SATA), then identify them:
+```bash
+# List all block devices - look for your drives by size
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT
+
+# Example output:
+# sda      500G
+# └─sda1   500G  ntfs   old-ssd-1
+# sdb        1T
+# └─sdb1     1T  ntfs   old-external-1
+# nvme0n1  1.8T
+# ├─nvme0n1p1  50G  ext4              /
+# ├─nvme0n1p2  20G  ext4              /home
+# └─nvme0n1p3 911G  ext4              /data
+
+# Get detailed info with UUIDs (useful to confirm the right drive)
+sudo blkid | grep ntfs
+# /dev/sda1: LABEL="old-ssd-1" UUID="A1B2C3..." TYPE="ntfs"
+# /dev/sdb1: LABEL="old-external-1" UUID="D4E5F6..." TYPE="ntfs"
+```
+
+**IMPORTANT**: Device names like `/dev/sda` can change between reboots. Always verify with `lsblk` and `blkid` before mounting.
+
+#### Step 3: Create mount points
+```bash
+sudo mkdir -p /media/sdb1 /media/sdc1
+```
+Use mount point names that match your `config.yml` `source_drives` paths (`/media/sdb1`, `/media/sdc1`).
+
+#### Step 4: Mount read-only
+```bash
+# Mount each drive as read-only (ro) - this is critical for safety
+sudo mount -t ntfs-3g -o ro,noexec /dev/sda1 /media/sdb1
+sudo mount -t ntfs-3g -o ro,noexec /dev/sdb1 /media/sdc1
+```
+
+Mount options explained:
+- `ro` - Read-only, prevents any writes to the drive
+- `noexec` - Prevents execution of files from the drive
+
+**Note**: Map the actual device (`/dev/sda1`) to the config mount point (`/media/sdb1`). The device name and mount point don't need to match.
+
+#### Step 5: Verify the mount
+```bash
+# Confirm drives are mounted read-only
+mount | grep media
+# /dev/sda1 on /media/sdb1 type fuseblk (ro,noexec,...)
+# /dev/sdb1 on /media/sdc1 type fuseblk (ro,noexec,...)
+
+# Browse the contents to confirm correct drives
+ls /media/sdb1/
+ls /media/sdc1/
+
+# Check total size of media files
+du -sh /media/sdb1 /media/sdc1
+```
+
+#### Step 6: Update config.yml if needed
+Verify that `config.yml` `source_drives` paths match your mount points:
+```yaml
+infrastructure:
+  storage:
+    source_drives:
+      - path: "/media/sdb1"
+        label: "old-ssd-1"
+        size: "512GB"
+        filesystem: "ntfs"
+      - path: "/media/sdc1"
+        label: "old-external-1"
+        size: "1TB"
+        filesystem: "ntfs"
+```
+
+#### After consolidation: Unmount safely
+```bash
+# When done with the entire consolidation process
+sudo umount /media/sdb1
+sudo umount /media/sdc1
+
+# If unmount fails ("target is busy"), check what's using it
+sudo lsof +f -- /media/sdb1
+# Then close those processes and retry
+```
 
 ### **Space Requirements Calculation**
 ```bash
-# Check total source drive space
+# Check total source drive space (after mounting)
 du -sh /media/sdb1 /media/sdc1
 # Ensure /data has: source_total_size + 100GB safety buffer
 
-# Example output:
+# Check available space on /data
+df -h /data
+
+# Example:
 # 450GB /media/sdb1
-# 800GB /media/sdc1  
+# 800GB /media/sdc1
 # Need: ~1350GB free space on /data partition
 ```
+
+---
+
+## Ansible Step-by-Step Commands
+
+Each phase can be run independently. Run from the `infra/ansible/` directory on your laptop.
+
+```bash
+cd infra/ansible
+
+# Phase 0: Check drives are mounted, verify disk space
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase0
+
+# Phase 1: Install packages, create directory structure
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase1
+
+# Phase 2: Copy all media from source drives to /data/incoming/
+# (long-running, up to 4 hours — use screen)
+screen -S photo-copy
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase2
+# Ctrl+A, D to detach — screen -r photo-copy to reattach
+
+# Phase 3: Analyze duplicates in copied files
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase3
+
+# Phase 4: Deploy Nextcloud for visual verification
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase4
+
+# Phase 5: Human verification pause (skipped when dry_run: true)
+# Phase 6: Final consolidation — remove duplicates, build /data/final/
+# (skipped when dry_run: true — set dry_run: false in config.yml to enable)
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase5,phase6
+
+# Phase 7: Cleanup temp files, generate completion report
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase7
+```
+
+Each phase validates its own prerequisites and will fail with a clear message if a prior phase hasn't been run yet.
 
 ---
 
@@ -64,12 +198,10 @@ du -sh /media/sdb1 /media/sdc1
 
 **Option 1: Ansible Automation (Recommended)**
 ```bash
-# From your laptop, run complete workflow
-screen -S photo-consolidation
-ansible-playbook -i infra/ansible/inventory/homelab infra/ansible/photo-consolidation.yml
-
-# Detach from screen: Ctrl+A, then D
-# Reattach later: screen -r photo-consolidation
+# Run phases step by step (see command reference above)
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase0
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase1
+ansible-playbook -i inventory/homelab photo-consolidation.yml --tags phase2
 ```
 
 **Option 2: Python CLI (Recommended for Manual Control)** //TODO: need to copy python script files to mini pc

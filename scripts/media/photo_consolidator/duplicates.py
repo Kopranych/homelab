@@ -62,7 +62,7 @@ class DuplicateDetector:
             config: Configuration instance
         """
         self.config = config
-        self.data_root = Path(config.get_data_root())
+        self.data_root = Path(config.get_consolidation_root())
         self.duplicates_dir = self.data_root / "duplicates" 
         self.manifests_dir = self.data_root / "manifests"
         
@@ -147,7 +147,8 @@ class DuplicateDetector:
         results = self._generate_reports(duplicate_groups, unique_files, total_files)
         
         # Check for warnings
-        duplicate_percentage = (len(duplicate_groups) * 100) / total_files if total_files > 0 else 0
+        total_duplicate_files = sum(len(g.files) for g in duplicate_groups)
+        duplicate_percentage = (total_duplicate_files * 100) / total_files if total_files > 0 else 0
         max_percentage = self.config.get_safety_config().get('max_duplicate_percentage', 80)
         
         if duplicate_percentage > max_percentage:
@@ -240,10 +241,10 @@ class DuplicateDetector:
             score += self.folder_bonuses.get('backup', -5)
         
         # Size bonus (larger files are generally better quality)
-        if file_info.size > 10 * 1024 * 1024:  # > 10MB
-            score += 5
-        elif file_info.size > 50 * 1024 * 1024:  # > 50MB  
+        if file_info.size > 50 * 1024 * 1024:  # > 50MB
             score += 10
+        elif file_info.size > 10 * 1024 * 1024:  # > 10MB
+            score += 5
         
         # Ensure score is within bounds
         return max(0, min(100, score))
@@ -305,7 +306,8 @@ class DuplicateDetector:
             f.write(f"Space savings: {format_bytes(total_space_savings)}\n")
             
             if total_files > 0:
-                duplicate_percentage = (len(duplicate_groups) * 100) / total_files
+                total_dup_files = sum(len(g.files) for g in duplicate_groups)
+                duplicate_percentage = (total_dup_files * 100) / total_files
                 f.write(f"Duplicate percentage: {duplicate_percentage:.1f}%\n")
             
             f.write("\n=== DUPLICATE GROUPS SUMMARY ===\n")
@@ -345,7 +347,7 @@ class DuplicateDetector:
     def _write_group_report(self, group_file: Path, group: DuplicateGroup, group_number: int):
         """Write individual duplicate group report."""
         
-        with open(group_file, 'w') as f:
+        with open(group_file, 'w', encoding='utf-8') as f:
             f.write(f"=== Duplicate Group {group_number:05d} ===\n")
             f.write(f"Hash: {group.hash}\n")
             f.write(f"Files: {len(group.files)}\n")

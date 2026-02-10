@@ -84,7 +84,14 @@ class Config:
     def get_data_root(self) -> str:
         """Get data root directory."""
         return self.get('infrastructure.storage.data_root', '/data')
-    
+
+    def get_consolidation_root(self) -> str:
+        """Get photo consolidation working directory."""
+        root = self.get('infrastructure.storage.consolidation_root')
+        if root:
+            return root
+        return self.get_data_root() + '/photo-consolidation'
+
     def get_supported_extensions(self) -> Dict[str, List[str]]:
         """Get supported file extensions for photos and videos."""
         extensions = self.get('photo_consolidation.extensions', {})
@@ -144,7 +151,13 @@ class Config:
             errors.append("Data root directory not configured")
         elif not Path(data_root).exists():
             errors.append(f"Data root directory does not exist: {data_root}")
-        
+
+        consolidation_root = self.get_consolidation_root()
+        if not consolidation_root:
+            errors.append("Consolidation root directory not configured")
+        elif not Path(consolidation_root).parent.exists():
+            errors.append(f"Parent of consolidation root does not exist: {consolidation_root}")
+
         # Check source drives
         source_drives = self.get_source_drives()
         if not source_drives:
