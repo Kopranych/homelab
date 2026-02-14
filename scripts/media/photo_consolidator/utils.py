@@ -2,12 +2,19 @@
 
 import os
 import hashlib
+import json
 import shutil
+import subprocess
 import psutil
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, Optional, Tuple, List
 import logging
+
+try:
+    import exifread
+except ImportError:
+    exifread = None
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +304,79 @@ def cleanup_empty_directories(directory: Path) -> int:
         logger.error(f"Error cleaning up directories in {directory}: {e}")
     
     return removed_count
+
+
+def extract_photo_date(file_path: Path) -> Optional[Tuple[int, int]]:
+    """
+    Extract photo/video date from EXIF metadata.
+
+    Args:
+        file_path: Path to media file
+
+    Returns:
+        Tuple of (year, month) or None if no date found
+    """
+    ext = file_path.suffix.lower().lstrip('.')
+
+    # Try EXIF for image files
+    if ext in ('jpg', 'jpeg', 'tiff', 'tif', 'cr2', 'nef', 'arw', 'dng',
+               'raf', 'orf', 'rw2', 'pef', 'srw', 'x3f', 'heic', 'heif', 'png'):
+        result = _extract_exif_date(file_path)
+        if result:
+            return result
+
+    # Try ffprobe for video files
+    if ext in ('mp4', 'mov', 'avi', 'mkv', 'mts', '3gp'):
+        result = _extract_video_date(file_path)
+        if result:
+            return result
+
+    return None
+
+
+def _extract_exif_date(file_path: Path) -> Optional[Tuple[int, int]]:
+    """Extract date from EXIF tags using exifread."""
+    if exifread is None:
+        return None
+    try:
+        with open(file_path, 'rb') as f:
+            tags = exifread.process_file(f, stop_tag='DateTimeDigitized', details=False)
+
+        for tag_name in ('EXIF DateTimeOriginal', 'EXIF DateTimeDigitized', 'Image DateTime'):
+            tag = tags.get(tag_name)
+            if tag:
+                # Format: "2020:07:28 11:49:03"
+                date_str = str(tag).strip()
+                if len(date_str) >= 7 and date_str[4] == ':':
+                    year = int(date_str[:4])
+                    month = int(date_str[5:7])
+                    if 1900 <= year <= 2100 and 1 <= month <= 12:
+                        return (year, month)
+    except Exception as e:
+        logger.debug(f"Could not read EXIF from {file_path}: {e}")
+    return None
+
+
+def _extract_video_date(file_path: Path) -> Optional[Tuple[int, int]]:
+    """Extract creation date from video using ffprobe."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+             '-show_entries', 'format_tags=creation_time', str(file_path)],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            creation_time = data.get('format', {}).get('tags', {}).get('creation_time', '')
+            if creation_time and len(creation_time) >= 7:
+                # Format: "2020-07-28T11:49:03.000000Z"
+                year = int(creation_time[:4])
+                month = int(creation_time[5:7])
+                if 1900 <= year <= 2100 and 1 <= month <= 12:
+                    return (year, month)
+    except Exception as e:
+        logger.debug(f"Could not read video date from {file_path}: {e}")
+    return None
 
 
 def get_current_timestamp():

@@ -10,11 +10,12 @@ from tqdm import tqdm
 from .config import Config
 from .duplicates import DuplicateGroup, FileInfo
 from .utils import (
-    ensure_directory, 
-    safe_copy_file, 
-    format_bytes, 
+    ensure_directory,
+    safe_copy_file,
+    format_bytes,
     cleanup_empty_directories,
-    get_current_timestamp
+    get_current_timestamp,
+    extract_photo_date
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,53 @@ class PhotoConsolidator:
         if self.config.should_backup_before_removal():
             ensure_directory(self.backup_dir)
     
+    @staticmethod
+    def _safe_dest_path(dest_path: Path, source_path: Path) -> Path:
+        """
+        Avoid overwriting a different file at the same destination.
+
+        If dest_path already exists with different content, append _2, _3, etc.
+        to the filename stem. Same-content files are fine to overwrite (idempotent).
+        """
+        if not dest_path.exists():
+            return dest_path
+
+        # Same size = almost certainly same file (already a duplicate by hash)
+        if dest_path.stat().st_size == source_path.stat().st_size:
+            return dest_path
+
+        # Collision: different file at same path — add counter suffix
+        stem = dest_path.stem
+        suffix = dest_path.suffix
+        parent = dest_path.parent
+        counter = 2
+        while True:
+            new_path = parent / f"{stem}_{counter}{suffix}"
+            if not new_path.exists():
+                logger.warning(f"Path collision, renaming: {dest_path.name} -> {new_path.name}")
+                return new_path
+            counter += 1
+
+    def _add_date_suffix(self, dest_path: Path, source_path: Path) -> Path:
+        """
+        Add YYYY-MM date suffix to the parent folder name based on EXIF metadata.
+
+        Args:
+            dest_path: Planned destination path
+            source_path: Original source file (to read EXIF from)
+
+        Returns:
+            dest_path with date-suffixed parent folder, or unchanged if no date found
+        """
+        date_info = extract_photo_date(source_path)
+        if date_info is None:
+            return dest_path
+
+        year, month = date_info
+        parent = dest_path.parent
+        new_parent_name = f"{parent.name}_{year:04d}-{month:02d}"
+        return parent.parent / new_parent_name / dest_path.name
+
     def consolidate_files(self, dry_run: Optional[bool] = None) -> Dict[str, Any]:
         """
         Consolidate files by removing duplicates and organizing.
@@ -175,8 +223,9 @@ class PhotoConsolidator:
         if len(path_parts) > 1:
             rel_path = Path(*path_parts[1:])  # Skip first part (drive name)
         
-        dest_path = self.final_dir / rel_path
-        
+        dest_path = self._add_date_suffix(self.final_dir / rel_path, best_path)
+        dest_path = self._safe_dest_path(dest_path, best_path)
+
         # Copy best file to final location
         if dry_run:
             logger.debug(f"DRY RUN: Would copy {best_path} -> {dest_path}")
@@ -311,7 +360,8 @@ class PhotoConsolidator:
                     if len(path_parts) > 1:
                         rel_path = Path(*path_parts[1:])
 
-                    dest_path = self.final_dir / rel_path
+                    dest_path = self._add_date_suffix(self.final_dir / rel_path, source_path)
+                    dest_path = self._safe_dest_path(dest_path, source_path)
 
                     # Copy unique file
                     if dry_run:
