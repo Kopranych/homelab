@@ -94,6 +94,9 @@ class DuplicateDetector:
         if not manifest_path.exists():
             raise ValueError(f"Manifest file not found: {manifest_file}")
         
+        # Clean up old reports before generating new ones
+        self._cleanup_old_reports()
+
         logger.info(f"Starting duplicate analysis from {manifest_file}")
         
         # Load manifest
@@ -174,6 +177,20 @@ class DuplicateDetector:
         logger.info("Duplicate analysis complete")
         return results
     
+    def _cleanup_old_reports(self):
+        """Remove old group and summary reports before a fresh analysis."""
+        groups_dir = self.duplicates_dir / "groups"
+        removed = 0
+        for old_file in groups_dir.glob("group_*.txt"):
+            old_file.unlink()
+            removed += 1
+        summary = self.duplicates_dir / "reports" / "copied_files_analysis.txt"
+        if summary.exists():
+            summary.unlink()
+            removed += 1
+        if removed > 0:
+            logger.info(f"Cleaned up {removed} old report files")
+
     def _create_file_info(self, file_data: Dict[str, Any]) -> FileInfo:
         """Create FileInfo object from manifest data."""
         path = file_data.get('path', '')

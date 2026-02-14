@@ -60,7 +60,8 @@ def setup_logging(level: str = 'INFO', log_dir: Path = None):
     logging.getLogger('PIL').setLevel(logging.WARNING)
 
 
-def _setup_file_logging(log_dir: Path, formatter: logging.Formatter, root_logger: logging.Logger):
+def _setup_file_logging(log_dir: Path, formatter: logging.Formatter, root_logger: logging.Logger,
+                        log_name: str = 'photo_consolidation'):
     """Add file handler to root logger."""
     global _file_handler
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +70,7 @@ def _setup_file_logging(log_dir: Path, formatter: logging.Formatter, root_logger
     if _file_handler is not None:
         root_logger.removeHandler(_file_handler)
 
-    _file_handler = logging.FileHandler(log_dir / 'photo_consolidation.log')
+    _file_handler = logging.FileHandler(log_dir / f'{log_name}.log')
     _file_handler.setFormatter(formatter)
     root_logger.addHandler(_file_handler)
 
@@ -133,7 +134,8 @@ def cli(ctx, config, log_level):
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        _setup_file_logging(log_dir, formatter, logging.getLogger())
+        log_name = ctx.invoked_subcommand or 'photo_consolidation'
+        _setup_file_logging(log_dir, formatter, logging.getLogger(), log_name)
 
         # Store in context
         ctx.ensure_object(dict)
