@@ -110,12 +110,27 @@ class DuplicateDetector:
         logger.info(f"Analyzing {total_files} files for duplicates")
         
         # Convert to FileInfo objects and calculate quality scores
+        # Skip files that no longer exist on disk (e.g. manually removed junk)
         file_infos = []
+        skipped_missing = 0
         for file_data in tqdm(files, desc="Processing files", unit="files"):
             file_info = self._create_file_info(file_data)
+            if not Path(file_info.path).exists():
+                skipped_missing += 1
+                logger.debug(f"Skipping missing file: {file_info.path}")
+                continue
             file_info.quality_score = self._calculate_quality_score(file_info)
             file_infos.append(file_info)
-        
+
+        if skipped_missing > 0:
+            logger.warning(f"Skipped {skipped_missing} files not found on disk "
+                           f"(out of {total_files} in manifest)")
+
+        total_files = len(file_infos)
+        if total_files == 0:
+            logger.warning("No files remain after filtering missing files")
+            return self._empty_results()
+
         # Group by hash to find duplicates
         hash_groups = defaultdict(list)
         for file_info in file_infos:

@@ -286,33 +286,37 @@ class PhotoConsolidator:
             return
         
         logger.info(f"Processing {len(unique_files)} unique files")
-        
+
+        skipped_missing = 0
+        dry_run_kept = 0
         with tqdm(unique_files, desc="Processing unique files", unit="files") as pbar:
             for file_data in pbar:
                 try:
                     source_path = Path(file_data['path'])
-                    
+
                     # Safety check
                     if not str(source_path).startswith(str(self.incoming_dir)):
                         logger.warning(f"Safety violation: Unique file not in incoming: {source_path}")
                         continue
-                    
+
                     if not source_path.exists():
-                        logger.warning(f"Unique file not found: {source_path}")
+                        skipped_missing += 1
+                        logger.debug(f"Skipping missing unique file: {source_path}")
                         continue
-                    
+
                     # Determine destination path
                     rel_path = source_path.relative_to(self.incoming_dir)
                     # Remove source drive prefix
                     path_parts = rel_path.parts
                     if len(path_parts) > 1:
                         rel_path = Path(*path_parts[1:])
-                    
+
                     dest_path = self.final_dir / rel_path
-                    
+
                     # Copy unique file
                     if dry_run:
                         logger.debug(f"DRY RUN: Would copy unique file {source_path} -> {dest_path}")
+                        dry_run_kept += 1
                     else:
                         if ensure_directory(dest_path.parent):
                             if safe_copy_file(source_path, dest_path, verify=True):
@@ -322,13 +326,16 @@ class PhotoConsolidator:
                                 error_msg = f"Failed to copy unique file: {source_path}"
                                 logger.error(error_msg)
                                 stats.errors.append(error_msg)
-                    
+
                 except Exception as e:
                     error_msg = f"Error processing unique file {file_data.get('path', 'unknown')}: {e}"
                     logger.error(error_msg)
                     stats.errors.append(error_msg)
-        
-        stats.files_kept += len(unique_files) if dry_run else stats.unique_files_copied
+
+        if skipped_missing > 0:
+            logger.warning(f"Skipped {skipped_missing} missing unique files")
+
+        stats.files_kept += dry_run_kept if dry_run else stats.unique_files_copied
     
     def _generate_final_report(self, stats: ConsolidationStats, dry_run: bool) -> Dict[str, Any]:
         """Generate final consolidation report."""

@@ -114,7 +114,7 @@ Default credentials:
 2. Run this command in your terminal:
 
 ```bash
-curl https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+curl https://api.telegram.org/bot8593737609:AAEI1uN_P76unlFb0ygxLX1ZfIYt6K_wb5w/getUpdates
 ```
 
 3. Look for `"chat":{"id":123456789}` in the response

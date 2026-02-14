@@ -109,14 +109,17 @@ class TestQualityScoring:
 class TestDuplicateDetection:
     """Test duplicate grouping logic."""
 
-    def test_same_hash_grouped_together(self, sample_config, sample_manifest):
+    def test_same_hash_grouped_together(self, sample_config, sample_manifest, create_test_files):
         detector = DuplicateDetector(sample_config)
+        fa = create_test_files('drv/a.jpg', b'aaa')
+        fb = create_test_files('drv/b.jpg', b'aaa')
+        fc = create_test_files('drv/c.jpg', b'ccc')
         files = [
-            {'path': '/data/incoming/drv/a.jpg', 'relative_path': 'drv/a.jpg',
+            {'path': str(fa), 'relative_path': 'drv/a.jpg',
              'size': 1000, 'hash': 'aaa'},
-            {'path': '/data/incoming/drv/b.jpg', 'relative_path': 'drv/b.jpg',
+            {'path': str(fb), 'relative_path': 'drv/b.jpg',
              'size': 1000, 'hash': 'aaa'},
-            {'path': '/data/incoming/drv/c.jpg', 'relative_path': 'drv/c.jpg',
+            {'path': str(fc), 'relative_path': 'drv/c.jpg',
              'size': 2000, 'hash': 'bbb'},
         ]
         sample_manifest(files)
@@ -124,12 +127,14 @@ class TestDuplicateDetection:
         assert results['duplicate_groups'] == 1
         assert results['unique_files'] == 1
 
-    def test_unique_files_not_grouped(self, sample_config, sample_manifest):
+    def test_unique_files_not_grouped(self, sample_config, sample_manifest, create_test_files):
         detector = DuplicateDetector(sample_config)
+        fa = create_test_files('drv/a.jpg', b'aaa')
+        fb = create_test_files('drv/b.jpg', b'bbb')
         files = [
-            {'path': '/data/incoming/drv/a.jpg', 'relative_path': 'drv/a.jpg',
+            {'path': str(fa), 'relative_path': 'drv/a.jpg',
              'size': 1000, 'hash': 'aaa'},
-            {'path': '/data/incoming/drv/b.jpg', 'relative_path': 'drv/b.jpg',
+            {'path': str(fb), 'relative_path': 'drv/b.jpg',
              'size': 2000, 'hash': 'bbb'},
         ]
         sample_manifest(files)
@@ -137,10 +142,11 @@ class TestDuplicateDetection:
         assert results['duplicate_groups'] == 0
         assert results['unique_files'] == 2
 
-    def test_empty_hash_skipped(self, sample_config, sample_manifest):
+    def test_empty_hash_skipped(self, sample_config, sample_manifest, create_test_files):
         detector = DuplicateDetector(sample_config)
+        fa = create_test_files('drv/a.jpg', b'aaa')
         files = [
-            {'path': '/data/incoming/drv/a.jpg', 'relative_path': 'drv/a.jpg',
+            {'path': str(fa), 'relative_path': 'drv/a.jpg',
              'size': 1000, 'hash': ''},
         ]
         sample_manifest(files)
@@ -148,27 +154,24 @@ class TestDuplicateDetection:
         assert results['duplicate_groups'] == 0
         assert results['unique_files'] == 0
 
-    def test_best_file_has_highest_score(self, sample_config, sample_manifest):
+    def test_best_file_has_highest_score(self, sample_config, sample_manifest, create_test_files):
         detector = DuplicateDetector(sample_config)
+        f_small = create_test_files('drv/backup/small.jpg', b'sm')
+        f_big = create_test_files('drv/vacation/big.cr2', b'x' * 100)
         files = [
-            {'path': '/data/incoming/drv/backup/small.jpg', 'relative_path': 'drv/backup/small.jpg',
+            {'path': str(f_small), 'relative_path': 'drv/backup/small.jpg',
              'size': 100, 'hash': 'dup'},
-            {'path': '/data/incoming/drv/vacation/big.cr2', 'relative_path': 'drv/vacation/big.cr2',
+            {'path': str(f_big), 'relative_path': 'drv/vacation/big.cr2',
              'size': 20_000_000, 'hash': 'dup'},
         ]
         sample_manifest(files)
         results = detector.analyze_duplicates()
         assert results['duplicate_groups'] == 1
-        # The RAW file in organized folder should be best
-        group_files = list(
-            (sample_config.get_consolidation_root() / Path('duplicates/groups')).iterdir()
-            if hasattr(sample_config, 'get_consolidation_root') else []
-        )
         # Just check the report was generated
         groups_dir = Path(sample_config.get_consolidation_root()) / 'duplicates' / 'groups'
         group_files = list(groups_dir.glob('group_*.txt'))
         assert len(group_files) == 1
-        content = group_files[0].read_text()
+        content = group_files[0].read_text(encoding='utf-8')
         # First file entry should be KEEP
         assert content.index('KEEP') < content.index('REMOVE')
 
@@ -176,16 +179,21 @@ class TestDuplicateDetection:
 class TestSafetyCheck:
     """Test safety threshold checks."""
 
-    def test_duplicate_percentage_uses_file_count_not_group_count(self, sample_config, sample_manifest):
+    def test_duplicate_percentage_uses_file_count_not_group_count(self, sample_config, sample_manifest, create_test_files):
         """Regression test for Bug 3: percentage should use file count, not group count."""
         detector = DuplicateDetector(sample_config)
         # 10 files total, 1 group with 6 duplicate files → 60% by files, 10% by groups
+        for i in range(6):
+            create_test_files(f'drv/dup{i}.jpg', f'dup{i}'.encode())
+        for i in range(4):
+            create_test_files(f'drv/unique{i}.jpg', f'uniq{i}'.encode())
+        root = str(Path(sample_config.get_consolidation_root()) / 'incoming')
         files = [
-            {'path': f'/data/incoming/drv/dup{i}.jpg', 'relative_path': f'drv/dup{i}.jpg',
+            {'path': f'{root}/drv/dup{i}.jpg', 'relative_path': f'drv/dup{i}.jpg',
              'size': 1000 + i, 'hash': 'same_hash'}
             for i in range(6)
         ] + [
-            {'path': f'/data/incoming/drv/unique{i}.jpg', 'relative_path': f'drv/unique{i}.jpg',
+            {'path': f'{root}/drv/unique{i}.jpg', 'relative_path': f'drv/unique{i}.jpg',
              'size': 2000 + i, 'hash': f'unique_{i}'}
             for i in range(4)
         ]
@@ -195,16 +203,20 @@ class TestSafetyCheck:
         # Should be 60% (6/10 files), not 10% (1 group / 10 files)
         assert results['duplicate_percentage'] == pytest.approx(60.0)
 
-    def test_warning_when_threshold_exceeded(self, sample_config, sample_manifest):
+    def test_warning_when_threshold_exceeded(self, sample_config, sample_manifest, create_test_files):
         """When duplicate percentage exceeds max, a warning is issued."""
         detector = DuplicateDetector(sample_config)
         # Create enough duplicates to exceed 80% threshold
+        for i in range(9):
+            create_test_files(f'drv/dup{i}.jpg', f'dup{i}'.encode())
+        create_test_files('drv/unique.jpg', b'unique')
+        root = str(Path(sample_config.get_consolidation_root()) / 'incoming')
         files = [
-            {'path': f'/data/incoming/drv/dup{i}.jpg', 'relative_path': f'drv/dup{i}.jpg',
+            {'path': f'{root}/drv/dup{i}.jpg', 'relative_path': f'drv/dup{i}.jpg',
              'size': 1000 + i, 'hash': 'same'}
             for i in range(9)
         ] + [
-            {'path': '/data/incoming/drv/unique.jpg', 'relative_path': 'drv/unique.jpg',
+            {'path': f'{root}/drv/unique.jpg', 'relative_path': 'drv/unique.jpg',
              'size': 5000, 'hash': 'only_one'},
         ]
         sample_manifest(files)
