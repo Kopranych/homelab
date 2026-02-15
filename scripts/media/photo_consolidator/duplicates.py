@@ -8,6 +8,11 @@ from collections import defaultdict, Counter
 from dataclasses import dataclass
 from tqdm import tqdm
 
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
 from .config import Config
 from .utils import format_bytes, ensure_directory, get_current_timestamp
 
@@ -277,11 +282,62 @@ class DuplicateDetector:
             score += 10
         elif file_info.size > 10 * 1024 * 1024:  # > 10MB
             score += 5
-        
+
+        # Corruption penalty — verify image can be opened as its claimed format
+        if self._is_corrupt_image(file_info):
+            score -= 50
+            logger.debug(f"Corrupt image penalty: {file_info.path}")
+
         # Ensure score is within bounds
         return max(0, min(100, score))
     
-    def _generate_reports(self, duplicate_groups: List[DuplicateGroup], 
+    @staticmethod
+    def _is_corrupt_image(file_info: FileInfo) -> bool:
+        """
+        Check if an image file is corrupt or has a mismatched extension.
+
+        Uses Pillow to verify the file can be opened. If the detected format
+        doesn't match the extension (e.g. JPEG data in a .HEIC file), the
+        file is considered corrupt.
+
+        Returns True if corrupt/mismatched, False if OK or not an image.
+        """
+        if Image is None:
+            return False
+
+        image_extensions = {
+            'jpg', 'jpeg', 'png', 'heic', 'heif', 'tiff', 'tif', 'bmp', 'webp',
+            'cr2', 'nef', 'arw', 'dng', 'raf', 'orf', 'rw2', 'pef', 'srw', 'x3f',
+        }
+        ext = file_info.extension.lower()
+        if ext not in image_extensions:
+            return False
+
+        try:
+            with Image.open(file_info.path) as img:
+                img.verify()
+                detected_format = (img.format or '').lower()
+
+            # Check for extension/format mismatch
+            # MPO (Multi-Picture Object) is a JPEG-compatible multi-image format
+            expected = {
+                'jpg': {'jpeg', 'mpo'}, 'jpeg': {'jpeg', 'mpo'},
+                'png': {'png'},
+                'heic': {'heif'}, 'heif': {'heif'},
+                'tiff': {'tiff'}, 'tif': {'tiff'},
+                'bmp': {'bmp'},
+                'webp': {'webp'},
+            }
+            expected_formats = expected.get(ext)
+            if expected_formats and detected_format and detected_format not in expected_formats:
+                logger.debug(f"Format mismatch: {file_info.path} has .{ext} but is {detected_format}")
+                return True
+
+            return False
+        except Exception:
+            return True
+
+    def _generate_reports(self, duplicate_groups: List[DuplicateGroup],
                          unique_files: List[FileInfo], total_files: int) -> Dict[str, Any]:
         """Generate comprehensive duplicate analysis reports."""
         

@@ -253,49 +253,18 @@ class PhotoConsolidator:
     
     def _handle_duplicate_removal(self, files_to_remove: List[str], group_name: str,
                                  stats: ConsolidationStats, dry_run: bool):
-        """Handle removal of duplicate files with optional backup."""
-        
-        # Backup files if configured
-        if self.config.should_backup_before_removal() and not dry_run:
-            group_backup_dir = self.backup_dir / group_name
-            ensure_directory(group_backup_dir)
-            
-            logger.debug(f"Creating backup for group {group_name}")
-            for file_path_str in files_to_remove:
-                file_path = Path(file_path_str)
-                if file_path.exists():
-                    backup_path = group_backup_dir / file_path.name
-                    if not safe_copy_file(file_path, backup_path):
-                        logger.warning(f"Failed to backup: {file_path}")
-        
-        # Remove duplicate files
+        """Track duplicate files for statistics (incoming is never modified)."""
+
         space_saved_group = 0
         for file_path_str in files_to_remove:
             file_path = Path(file_path_str)
-            
-            # Safety check
-            if not str(file_path).startswith(str(self.incoming_dir)):
-                logger.warning(f"Safety violation: Remove file not in incoming: {file_path}")
-                continue
-            
+
             if file_path.exists():
                 file_size = file_path.stat().st_size
-                
-                if dry_run:
-                    logger.debug(f"DRY RUN: Would remove {file_path} ({format_bytes(file_size)})")
-                    space_saved_group += file_size
-                    stats.files_removed += 1
-                else:
-                    try:
-                        file_path.unlink()
-                        logger.debug(f"Removed: {file_path.relative_to(self.incoming_dir)} (duplicate)")
-                        space_saved_group += file_size
-                        stats.files_removed += 1
-                    except Exception as e:
-                        error_msg = f"Failed to remove {file_path}: {e}"
-                        logger.error(error_msg)
-                        stats.errors.append(error_msg)
-        
+                space_saved_group += file_size
+                stats.files_removed += 1
+                logger.debug(f"Duplicate skipped: {file_path.name} ({format_bytes(file_size)})")
+
         stats.space_saved += space_saved_group
     
     def _process_unique_files(self, stats: ConsolidationStats, dry_run: bool):
