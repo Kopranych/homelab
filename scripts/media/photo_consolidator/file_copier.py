@@ -76,8 +76,11 @@ class FileCopier:
         for drive_info in source_drives:
             drive_path = drive_info.get('path', '')
             drive_label = drive_info.get('label', Path(drive_path).name)
+            include_folders = drive_info.get('include_folders')
 
             logger.info(f"{'DRY RUN: ' if dry_run else ''}Processing drive: {drive_label} ({drive_path})")
+            if include_folders:
+                logger.info(f"Filtering to top-level folders: {include_folders}")
 
             drive_dir = Path(drive_path)
             if not drive_dir.exists() or not drive_dir.is_dir():
@@ -87,7 +90,8 @@ class FileCopier:
                 continue
 
             drive_result = self._copy_single_drive(
-                drive_dir, drive_label, dry_run, progress_callback
+                drive_dir, drive_label, dry_run, progress_callback,
+                include_folders=include_folders,
             )
 
             results['copied_files'] += drive_result['copied']
@@ -118,6 +122,7 @@ class FileCopier:
         drive_label: str,
         dry_run: bool,
         progress_callback: Optional[Callable[[int, int], None]],
+        include_folders: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Copy all media files from a single drive."""
         dest_dir = self.incoming_dir / drive_label
@@ -125,7 +130,20 @@ class FileCopier:
 
         # Collect files first for count
         logger.info(f"Enumerating files on {drive_label}...")
-        media_files = list(find_media_files(drive_dir, self.all_extensions))
+        if include_folders:
+            # Scan only listed top-level folders
+            media_files = []
+            for folder_name in include_folders:
+                folder_path = drive_dir / folder_name
+                if folder_path.exists() and folder_path.is_dir():
+                    logger.info(f"Scanning folder: {folder_path}")
+                    folder_files = list(find_media_files(folder_path, self.all_extensions))
+                    logger.info(f"  Found {len(folder_files):,} media files in {folder_name}")
+                    media_files.extend(folder_files)
+                else:
+                    logger.warning(f"Include folder not found: {folder_path}")
+        else:
+            media_files = list(find_media_files(drive_dir, self.all_extensions))
         total = len(media_files)
         logger.info(f"Found {total:,} media files on {drive_label}")
 

@@ -28,16 +28,19 @@ class Config:
         # Look for config files in order of preference
         possible_paths = [
             "config.local.yml",
-            "config.yml", 
+            "config.yml",
             "../../../config.local.yml",
             "../../../config.yml",
         ]
-        
-        for path in possible_paths:
-            config_file = Path(__file__).parent / path
-            if config_file.exists():
-                logger.info(f"Found config file: {config_file}")
-                return str(config_file.resolve())
+
+        # Search relative to package dir and cwd
+        search_roots = [Path(__file__).parent, Path.cwd()]
+        for root in search_roots:
+            for path in possible_paths:
+                config_file = root / path
+                if config_file.exists():
+                    logger.info(f"Found config file: {config_file}")
+                    return str(config_file.resolve())
         
         raise FileNotFoundError("No configuration file found. Expected config.yml or config.local.yml")
     
@@ -127,6 +130,10 @@ class Config:
     def should_preserve_structure(self) -> bool:
         """Check if original folder structure should be preserved."""
         return self.get('photo_consolidation.process.preserve_structure', True)
+
+    def should_add_date_suffix(self) -> bool:
+        """Check if YYYY-MM date suffix should be added to parent folders from EXIF."""
+        return self.get('photo_consolidation.process.add_date_suffix', True)
     
     def is_dry_run(self) -> bool:
         """Check if this is a dry run."""

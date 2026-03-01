@@ -2,6 +2,7 @@
 
 import json
 import logging
+import random
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from .duplicates import DuplicateGroup, FileInfo
 from .utils import (
     ensure_directory,
     safe_copy_file,
+    calculate_sha256,
     format_bytes,
     cleanup_empty_directories,
     get_current_timestamp,
@@ -223,7 +225,9 @@ class PhotoConsolidator:
         if len(path_parts) > 1:
             rel_path = Path(*path_parts[1:])  # Skip first part (drive name)
         
-        dest_path = self._add_date_suffix(self.final_dir / rel_path, best_path)
+        dest_path = self.final_dir / rel_path
+        if self.config.should_add_date_suffix():
+            dest_path = self._add_date_suffix(dest_path, best_path)
         dest_path = self._safe_dest_path(dest_path, best_path)
 
         # Copy best file to final location
@@ -329,7 +333,9 @@ class PhotoConsolidator:
                     if len(path_parts) > 1:
                         rel_path = Path(*path_parts[1:])
 
-                    dest_path = self._add_date_suffix(self.final_dir / rel_path, source_path)
+                    dest_path = self.final_dir / rel_path
+                    if self.config.should_add_date_suffix():
+                        dest_path = self._add_date_suffix(dest_path, source_path)
                     dest_path = self._safe_dest_path(dest_path, source_path)
 
                     # Copy unique file
@@ -417,5 +423,117 @@ class PhotoConsolidator:
             removed_dirs = cleanup_empty_directories(self.incoming_dir)
             if removed_dirs > 0:
                 logger.info(f"Cleaned up {removed_dirs} empty directories")
-        
+
         return report_data
+
+    def verify_final(self, hash_samples: int = 50) -> Dict[str, Any]:
+        """
+        Verify final/ contains every expected file by comparing SHA256 hashes.
+
+        Approach (path-independent, reliable):
+        1. Build set of expected hashes: KEEP hash from each duplicate group
+           + every unique hash from the manifest.
+        2. Hash a random sample of files in final/ and confirm they match
+           an expected hash.
+        3. Count files in final/ vs expected.
+
+        Args:
+            hash_samples: Number of random files in final/ to SHA256-verify
+
+        Returns:
+            Dictionary with verification results
+        """
+        logger.info("Starting final directory verification")
+
+        # --- 1. Build expected hashes ---
+        expected_hashes = set()
+
+        # From duplicate groups: each group's hash = one expected file
+        groups_dir = self.duplicates_dir / "groups"
+        group_count = 0
+        if groups_dir.exists():
+            group_files = list(groups_dir.glob("group_*.txt"))
+            logger.info(f"Reading hashes from {len(group_files)} duplicate groups")
+            for gf in tqdm(group_files, desc="Reading group hashes", unit="groups"):
+                group_hash = self._parse_group_hash(gf)
+                if group_hash:
+                    expected_hashes.add(group_hash)
+                    group_count += 1
+
+        # From manifest: unique hashes (files not in any duplicate group)
+        manifest_file = self.manifests_dir / "copied_files_combined.json"
+        unique_count = 0
+        if manifest_file.exists():
+            with open(manifest_file, 'r') as f:
+                manifest = json.load(f)
+
+            hash_to_files = {}
+            for fd in manifest.get('files', []):
+                h = fd.get('hash', '')
+                if h:
+                    hash_to_files.setdefault(h, []).append(fd)
+
+            for h, files_list in hash_to_files.items():
+                if len(files_list) == 1:
+                    # Check source still exists (skip deleted system files)
+                    if Path(files_list[0]['path']).exists():
+                        expected_hashes.add(h)
+                        unique_count += 1
+
+        logger.info(f"Expected hashes: {len(expected_hashes)} "
+                     f"({group_count} from groups + {unique_count} unique)")
+
+        # --- 2. Count files in final/ ---
+        final_files = [f for f in self.final_dir.rglob('*') if f.is_file()]
+        total_final = len(final_files)
+        logger.info(f"Files in final/: {total_final}")
+
+        # --- 3. SHA256-verify random sample from final/ ---
+        sample_size = min(hash_samples, total_final)
+        sample = random.sample(final_files, sample_size) if sample_size > 0 else []
+
+        matched = 0
+        not_in_expected = []
+        logger.info(f"SHA256-verifying {sample_size} random files from final/")
+
+        for fpath in tqdm(sample, desc="Hash verification", unit="files"):
+            h = calculate_sha256(fpath)
+            if h in expected_hashes:
+                matched += 1
+            else:
+                not_in_expected.append({'path': str(fpath), 'hash': h})
+
+        # --- Build result ---
+        ok = (total_final >= len(expected_hashes)) and len(not_in_expected) == 0
+
+        result = {
+            'success': ok,
+            'expected_unique_hashes': len(expected_hashes),
+            'expected_from_groups': group_count,
+            'expected_from_unique': unique_count,
+            'final_files_count': total_final,
+            'count_match': total_final >= len(expected_hashes),
+            'hash_samples_checked': sample_size,
+            'hash_samples_matched': matched,
+            'hash_samples_unknown': len(not_in_expected),
+            'unknown_file_details': not_in_expected[:20],
+        }
+
+        # Save report
+        report_file = (self.data_root / "logs" /
+                       f"verification_{get_current_timestamp().replace(':', '-')}.json")
+        ensure_directory(report_file.parent)
+        with open(report_file, 'w') as f:
+            json.dump(result, f, indent=2)
+        logger.info(f"Verification report saved: {report_file}")
+
+        return result
+
+    @staticmethod
+    def _parse_group_hash(group_file: Path) -> Optional[str]:
+        """Extract the SHA256 hash from a group report file header."""
+        with open(group_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('Hash:'):
+                    return line.split(':', 1)[1].strip()
+        return None

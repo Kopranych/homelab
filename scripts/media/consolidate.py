@@ -387,6 +387,56 @@ def workflow(ctx):
 
 
 @cli.command()
+@click.option('--samples', '-s', default=50, help='Number of random files to SHA256-verify')
+@click.pass_context
+def verify(ctx, samples):
+    """Verify that all expected files exist in final/ and are not corrupted."""
+
+    print_header("VERIFICATION PHASE")
+
+    config = ctx.obj['config']
+    consolidator = PhotoConsolidator(config)
+
+    try:
+        print_info("Verifying final/ against group reports and manifest...")
+
+        result = consolidator.verify_final(hash_samples=samples)
+
+        click.echo()
+        print_info(f"Expected unique hashes: {result['expected_unique_hashes']:,}")
+        print_info(f"  From duplicate groups (KEEP): {result['expected_from_groups']:,}")
+        print_info(f"  From unique files:            {result['expected_from_unique']:,}")
+        click.echo()
+        print_info(f"Files in final/: {result['final_files_count']:,}")
+
+        if result['count_match']:
+            print_success(f"Count OK: final/ has >= expected files")
+        else:
+            print_error(f"Count MISMATCH: expected >= {result['expected_unique_hashes']:,}, "
+                        f"got {result['final_files_count']:,}")
+
+        click.echo()
+        print_info(f"SHA256 sample: {result['hash_samples_matched']}/{result['hash_samples_checked']} matched")
+
+        if result['hash_samples_unknown'] > 0:
+            print_warning(f"Files in final/ not matching any expected hash: {result['hash_samples_unknown']}")
+            for item in result['unknown_file_details'][:5]:
+                click.echo(f"  - {item['path']}")
+
+        click.echo()
+        if result['success']:
+            print_success("Verification PASSED")
+        else:
+            print_error("Verification FAILED - see details above")
+
+        sys.stdout.flush()
+
+    except Exception as e:
+        print_error(f"Verification failed: {e}")
+        sys.exit(1)
+
+
+@cli.command()
 @click.pass_context
 def status(ctx):
     """Show current consolidation status and statistics."""
