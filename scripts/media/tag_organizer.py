@@ -126,10 +126,17 @@ def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[
     relative to target_folder:
       keep_parents=0: 'img.jpg'
       keep_parents=1: '202207__/img.jpg'
-    status: 'moved' | 'renamed' | 'failed'
+    status: 'moved' | 'renamed' | 'skipped' | 'failed'
     """
     subfolder, filename = _dest_subpath(db_path, keep_parents)
     dst_folder = f"{target_folder}/{subfolder}" if subfolder else target_folder
+    rel_dest   = f"{subfolder}/{filename}" if subfolder else filename
+
+    # Idempotency: file is already at the destination (e.g. rerun after success)
+    if f"{WEBDAV_ROOT}/{db_path}" == f"{dst_folder}/{filename}":
+        log.info(f"✓ ALREADY IN PLACE: {filename} (skipping)")
+        return 'skipped', rel_dest
+
     stem   = Path(filename).stem
     suffix = Path(filename).suffix
     src    = _webdav_url(f"{WEBDAV_ROOT}/{db_path}")
@@ -159,6 +166,15 @@ def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[
 
 def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
     target_folder = f"{WEBDAV_ROOT}/{folder.strip('/')}"
+    run_ts  = datetime.now()
+    run_id  = run_ts.strftime('%Y%m%d_%H%M%S')
+    log_dir = Path(LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"tag_move_{tag}_{run_id}.log"
+    fh = logging.FileHandler(log_file, encoding='utf-8')
+    fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    logging.getLogger().addHandler(fh)
+    log.info(f"Log: {log_file}")
 
     files = get_tagged_files(tag)
     if not files:
@@ -187,7 +203,7 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
                 ensure_folder(f"{target_folder}/{subfolder}")
                 seen_subfolders.add(subfolder)
 
-    moved, renamed, failed = [], [], []
+    moved, renamed, skipped, failed = [], [], [], []
     for f in files:
         status, dest_name = move_file(f['path'], target_folder, keep_parents)
         entry = {**f, 'dest': dest_name}
@@ -195,14 +211,17 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
             moved.append(entry)
         elif status == 'renamed':
             renamed.append(entry)
+        elif status == 'skipped':
+            skipped.append(entry)
         else:
             failed.append(entry)
 
-    moved_size  = sum(e['size'] for e in moved + renamed)
-    failed_size = sum(e['size'] for e in failed)
+    moved_size   = sum(e['size'] for e in moved + renamed)
+    skipped_size = sum(e['size'] for e in skipped)
+    failed_size  = sum(e['size'] for e in failed)
 
     report = {
-        'timestamp':     datetime.now().isoformat(),
+        'timestamp':     run_ts.isoformat(),
         'tag':           tag,
         'target_folder': target_folder,
         'keep_parents':  keep_parents,
@@ -212,25 +231,27 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
             'size_total_hr':   format_bytes(total_size),
             'files_moved':     len(moved),
             'files_renamed':   len(renamed),
+            'files_skipped':   len(skipped),
             'files_failed':    len(failed),
             'size_moved':      moved_size,
             'size_moved_hr':   format_bytes(moved_size),
+            'size_skipped':    skipped_size,
+            'size_skipped_hr': format_bytes(skipped_size),
             'size_failed':     failed_size,
             'size_failed_hr':  format_bytes(failed_size),
         },
         'moved_files':   moved,
         'renamed_files': renamed,
+        'skipped_files': skipped,
         'failed_files':  failed,
     }
 
-    log_path = (Path(LOG_DIR) /
-                f"tag_move_{tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"tag_move_{tag}_{run_id}.json"
     log_path.write_text(json.dumps(report, indent=2, ensure_ascii=False))
 
     log.info(
         f"Done: {len(moved)} moved, {len(renamed)} renamed (collision), "
-        f"{len(failed)} failed | "
+        f"{len(skipped)} skipped (already in place), {len(failed)} failed | "
         f"Moved: {format_bytes(moved_size)} / {format_bytes(total_size)}"
     )
     log.info(f"Report: {log_path}")

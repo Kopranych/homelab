@@ -226,6 +226,32 @@ class TestDestSubpath:
 
 class TestMoveFile:
 
+    def test_should_return_skipped_when_already_at_destination(self):
+        # File DB path already matches the computed destination — no HTTP call
+        with patch('tag_organizer.requests.request') as mock_req:
+            status, name = tag_organizer.move_file(
+                'Photos/Wedding/IMG_001.JPG',
+                'Consolidated/Photos/Wedding',
+                keep_parents=0,
+            )
+
+        mock_req.assert_not_called()
+        assert status == 'skipped'
+        assert name == 'IMG_001.JPG'
+
+    def test_should_return_skipped_with_subfolder_when_already_at_destination(self):
+        # keep_parents=1: file is already at Wedding/202207__/img.jpg
+        with patch('tag_organizer.requests.request') as mock_req:
+            status, name = tag_organizer.move_file(
+                'Photos/Wedding/202207__/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=1,
+            )
+
+        mock_req.assert_not_called()
+        assert status == 'skipped'
+        assert name == '202207__/img.jpg'
+
     def test_should_return_moved_when_201(self):
         with patch('tag_organizer.requests.request', return_value=_http(201)):
             status, name = tag_organizer.move_file(
@@ -462,6 +488,19 @@ class TestMain:
         assert report['summary']['files_renamed'] == 1
         assert len(report['renamed_files'])       == 1
         assert report['renamed_files'][0]['dest'] == 'DSC_001_2.JPG'
+
+    def test_should_count_skipped_files_in_report(self, tmp_path):
+        move_results = [('moved', 'IMG_001.JPG'), ('skipped', 'DSC_001.JPG')]
+        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+             patch('tag_organizer.ensure_folder'), \
+             patch('tag_organizer.move_file', side_effect=move_results), \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
+
+        report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
+        assert report['summary']['files_skipped'] == 1
+        assert report['summary']['files_moved']   == 1
+        assert len(report['skipped_files'])       == 1
 
     def test_should_count_failed_files_in_report(self, tmp_path):
         move_results = [('moved', 'IMG_001.JPG'), ('failed', 'DSC_001.JPG')]
