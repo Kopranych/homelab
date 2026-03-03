@@ -171,6 +171,22 @@ services:
         port: 8080
 
 # ====================
+# NEXTCLOUD
+# ====================
+nextcloud:
+  url: "https://homelab.nebelung-mercat.ts.net"
+  user: "admin"
+  password: ""        # Fill in config.local.yml — never commit the real value!
+  db:
+    host: "localhost"
+    port: 5432
+    name: "nextcloud"
+    user: "nextcloud"
+    password: ""      # Fill in config.local.yml — never commit the real value!
+  webdav_root: "Consolidated"        # External storage mount name
+  log_dir: "/data/photo-consolidation/logs"
+
+# ====================
 # PHOTO CONSOLIDATION
 # ====================
 photo_consolidation:

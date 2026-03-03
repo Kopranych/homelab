@@ -3,8 +3,13 @@
 
 Usage:
     python3 tag_organizer.py --tag wedding --folder "Photos/Wedding"
-    python3 tag_organizer.py --tag vacation_2021 --folder "Photos/Vacation2021"
-    python3 tag_organizer.py --tag wedding --folder "Photos/Wedding" --dry-run
+    python3 tag_organizer.py --tag wedding --folder "Photos/Wedding" --keep-parents 1
+    python3 tag_organizer.py --tag wedding --folder "Photos/Wedding" --keep-parents 2 --dry-run
+
+--keep-parents N preserves the last N folders from the original path:
+    N=0  Photos/iPhone/202207__/img.jpg  →  Wedding/img.jpg          (flat, default)
+    N=1  Photos/iPhone/202207__/img.jpg  →  Wedding/202207__/img.jpg
+    N=2  Photos/iPhone/202207__/img.jpg  →  Wedding/iPhone/202207__/img.jpg
 
 See docs/06-photo-tag-organizer.md for full documentation.
 """
@@ -15,6 +20,7 @@ import logging
 import urllib3
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import psycopg2
 import requests
@@ -31,7 +37,7 @@ DB_CONFIG = {
 }
 
 NC_URL       = 'https://homelab.nebelung-mercat.ts.net'
-NC_USER      = 'kopranych'
+NC_USER      = 'admin'
 NC_PASS      = 'CHANGEME'
 LOG_DIR      = '/data/logs'
 WEBDAV_ROOT  = 'Consolidated'   # external storage mount name in Nextcloud
@@ -46,12 +52,35 @@ SSL_VERIFY  = False   # Traefik uses self-signed cert
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _webdav_url(path: str) -> str:
+    """Build a WebDAV URL with the path percent-encoded (handles non-ASCII filenames)."""
+    return f"{WEBDAV_BASE}/{quote(path, safe='/')}"
+
+
 def format_bytes(n: int) -> str:
     for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
         if n < 1024:
             return f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} PB"
+
+
+def _dest_subpath(db_path: str, keep_parents: int) -> tuple[str, str]:
+    """Split db_path into (subfolder, filename) based on keep_parents.
+
+    keep_parents=0: ('', 'img.jpg')
+    keep_parents=1: ('202207__', 'img.jpg')
+    keep_parents=2: ('iPhone/202207__', 'img.jpg')
+
+    If keep_parents exceeds available depth, all available parents are used.
+    """
+    parts = Path(db_path).parts
+    filename = parts[-1]
+    if keep_parents == 0 or len(parts) <= 1:
+        return '', filename
+    n = min(keep_parents, len(parts) - 1)
+    subfolder = '/'.join(parts[-(n + 1):-1])
+    return subfolder, filename
 
 
 def get_tagged_files(tag_name: str) -> list[dict]:
@@ -61,7 +90,7 @@ def get_tagged_files(tag_name: str) -> list[dict]:
     cur.execute("""
         SELECT fc.path, fc.size
         FROM oc_filecache fc
-        JOIN oc_systemtag_object_mapping m ON m.objectid = fc.fileid
+        JOIN oc_systemtag_object_mapping m ON m.objectid = fc.fileid::text
         JOIN oc_systemtag t               ON t.id = m.systemtagid
         WHERE t.name = %s
           AND m.objecttype = 'files'
@@ -81,47 +110,54 @@ def ensure_folder(webdav_path: str):
     parts = webdav_path.strip('/').split('/')
     for i in range(1, len(parts) + 1):
         partial = '/'.join(parts[:i])
-        r = requests.request('MKCOL', f"{WEBDAV_BASE}/{partial}",
+        r = requests.request('MKCOL', _webdav_url(partial),
                              auth=AUTH, verify=SSL_VERIFY)
         if r.status_code not in (201, 405):  # 201 created, 405 already exists
             raise RuntimeError(f"MKCOL failed for '{partial}': {r.status_code} {r.text[:120]}")
     log.info(f"Target folder ready: {webdav_path}")
 
 
-def move_file(db_path: str, target_folder: str) -> tuple[str, str]:
+def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[str, str]:
     """Move one file via WebDAV MOVE.
 
     On filename collision tries stem_2, stem_3 … stem_99 before giving up.
-    Returns (status, dest_filename):
-      status: 'moved' | 'renamed' | 'failed'
+
+    Returns (status, dest_relative_path) where dest_relative_path is
+    relative to target_folder:
+      keep_parents=0: 'img.jpg'
+      keep_parents=1: '202207__/img.jpg'
+    status: 'moved' | 'renamed' | 'failed'
     """
-    stem   = Path(db_path).stem
-    suffix = Path(db_path).suffix
-    src    = f"{WEBDAV_BASE}/{WEBDAV_ROOT}/{db_path}"
+    subfolder, filename = _dest_subpath(db_path, keep_parents)
+    dst_folder = f"{target_folder}/{subfolder}" if subfolder else target_folder
+    stem   = Path(filename).stem
+    suffix = Path(filename).suffix
+    src    = _webdav_url(f"{WEBDAV_ROOT}/{db_path}")
 
     for counter in range(1, 100):
-        name = f"{stem}{suffix}" if counter == 1 else f"{stem}_{counter}{suffix}"
-        dst  = f"{WEBDAV_BASE}/{target_folder}/{name}"
-        r    = requests.request('MOVE', src, auth=AUTH, verify=SSL_VERIFY,
-                                headers={'Destination': dst, 'Overwrite': 'F'})
+        name     = f"{stem}{suffix}" if counter == 1 else f"{stem}_{counter}{suffix}"
+        rel_dest = f"{subfolder}/{name}" if subfolder else name
+        dst      = _webdav_url(f"{dst_folder}/{name}")
+        r        = requests.request('MOVE', src, auth=AUTH, verify=SSL_VERIFY,
+                                    headers={'Destination': dst, 'Overwrite': 'F'})
 
         if r.status_code in (201, 204):
             status = 'moved' if counter == 1 else 'renamed'
-            log.info(f"✓ {status.upper()}: {Path(db_path).name} → {name}")
-            return status, name
+            log.info(f"✓ {status.upper()}: {filename} → {rel_dest}")
+            return status, rel_dest
         elif r.status_code == 412:   # destination exists, try next suffix
             continue
         else:
             log.error(f"✗ FAILED ({r.status_code}): {db_path}  {r.text[:120]}")
-            return 'failed', name
+            return 'failed', rel_dest
 
     log.error(f"✗ FAILED (all 99 suffixes taken): {db_path}")
-    return 'failed', f"{stem}{suffix}"
+    return 'failed', f"{subfolder}/{filename}" if subfolder else filename
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(tag: str, folder: str, dry_run: bool = False):
+def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
     target_folder = f"{WEBDAV_ROOT}/{folder.strip('/')}"
 
     files = get_tagged_files(tag)
@@ -133,16 +169,27 @@ def main(tag: str, folder: str, dry_run: bool = False):
     log.info(f"Total to process: {len(files)} files, {format_bytes(total_size)}")
 
     if dry_run:
-        log.info("DRY RUN — files that would be moved:")
+        log.info(f"DRY RUN — files that would be moved (keep_parents={keep_parents}):")
         for f in files:
-            log.info(f"  [{format_bytes(f['size']):>10}]  {f['path']}")
+            subfolder, filename = _dest_subpath(f['path'], keep_parents)
+            dest = f"{subfolder}/{filename}" if subfolder else filename
+            log.info(f"  [{format_bytes(f['size']):>10}]  {f['path']} → {dest}")
         return
 
     ensure_folder(target_folder)
 
+    # Pre-create unique destination subfolders (avoids redundant MKCOL per file)
+    if keep_parents > 0:
+        seen_subfolders: set[str] = set()
+        for f in files:
+            subfolder, _ = _dest_subpath(f['path'], keep_parents)
+            if subfolder and subfolder not in seen_subfolders:
+                ensure_folder(f"{target_folder}/{subfolder}")
+                seen_subfolders.add(subfolder)
+
     moved, renamed, failed = [], [], []
     for f in files:
-        status, dest_name = move_file(f['path'], target_folder)
+        status, dest_name = move_file(f['path'], target_folder, keep_parents)
         entry = {**f, 'dest': dest_name}
         if status == 'moved':
             moved.append(entry)
@@ -158,6 +205,7 @@ def main(tag: str, folder: str, dry_run: bool = False):
         'timestamp':     datetime.now().isoformat(),
         'tag':           tag,
         'target_folder': target_folder,
+        'keep_parents':  keep_parents,
         'summary': {
             'files_total':     len(files),
             'size_total':      total_size,
@@ -192,11 +240,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Move Nextcloud-tagged photos to a folder via WebDAV.'
     )
-    parser.add_argument('--tag',     required=True,
+    parser.add_argument('--tag',          required=True,
                         help='Nextcloud tag name, e.g. wedding')
-    parser.add_argument('--folder',  required=True,
+    parser.add_argument('--folder',       required=True,
                         help='Target path inside Consolidated/, e.g. Photos/Wedding')
-    parser.add_argument('--dry-run', action='store_true',
+    parser.add_argument('--keep-parents', type=int, default=0,
+                        help='Parent folders to preserve from original path (0=flat, 1=one level, 2=two levels)')
+    parser.add_argument('--dry-run',      action='store_true',
                         help='List files without moving')
     args = parser.parse_args()
-    main(tag=args.tag, folder=args.folder, dry_run=args.dry_run)
+    main(tag=args.tag, folder=args.folder,
+         dry_run=args.dry_run, keep_parents=args.keep_parents)

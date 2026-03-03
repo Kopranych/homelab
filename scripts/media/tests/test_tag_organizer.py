@@ -116,6 +116,29 @@ class TestGetTaggedFiles:
         mock_connect.return_value.close.assert_called_once()
 
 
+# ── _webdav_url ───────────────────────────────────────────────────────────────
+
+class TestWebdavUrl:
+
+    def test_should_return_base_plus_ascii_path_unchanged(self):
+        url = tag_organizer._webdav_url('Consolidated/Photos/Wedding')
+        assert url == f"{tag_organizer.WEBDAV_BASE}/Consolidated/Photos/Wedding"
+
+    def test_should_percent_encode_cyrillic_characters(self):
+        url = tag_organizer._webdav_url('Consolidated/Видео/img.jpg')
+        assert 'Видео' not in url
+        assert '%' in url
+
+    def test_should_preserve_slash_separators(self):
+        url = tag_organizer._webdav_url('a/b/c')
+        assert url.endswith('/a/b/c')
+
+    def test_should_encode_spaces_in_path(self):
+        url = tag_organizer._webdav_url('Consolidated/Видео Жени/img.jpg')
+        assert ' ' not in url
+        assert 'Видео' not in url
+
+
 # ── ensure_folder ─────────────────────────────────────────────────────────────
 
 class TestEnsureFolder:
@@ -158,6 +181,45 @@ class TestEnsureFolder:
                 tag_organizer.ensure_folder('Consolidated/Photos/Wedding')
 
         assert mock_req.call_count == 2  # stopped after second component failed
+
+    def test_should_percent_encode_cyrillic_in_mkcol_url(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)) as mock_req:
+            tag_organizer.ensure_folder('Consolidated/Видео/Жени')
+
+        urls = [c[0][1] for c in mock_req.call_args_list]
+        for url in urls:
+            assert 'Видео' not in url
+            assert 'Жени' not in url
+
+
+# ── _dest_subpath ─────────────────────────────────────────────────────────────
+
+class TestDestSubpath:
+
+    def test_should_return_empty_subfolder_when_keep_parents_0(self):
+        sf, fn = tag_organizer._dest_subpath('Photos/iPhone/202207__/img.jpg', 0)
+        assert sf == ''
+        assert fn == 'img.jpg'
+
+    def test_should_return_one_parent_when_keep_parents_1(self):
+        sf, fn = tag_organizer._dest_subpath('Photos/iPhone/202207__/img.jpg', 1)
+        assert sf == '202207__'
+        assert fn == 'img.jpg'
+
+    def test_should_return_two_parents_when_keep_parents_2(self):
+        sf, fn = tag_organizer._dest_subpath('Photos/iPhone/202207__/img.jpg', 2)
+        assert sf == 'iPhone/202207__'
+        assert fn == 'img.jpg'
+
+    def test_should_clamp_when_keep_parents_exceeds_path_depth(self):
+        sf, fn = tag_organizer._dest_subpath('Photos/img.jpg', 5)
+        assert sf == 'Photos'
+        assert fn == 'img.jpg'
+
+    def test_should_return_empty_subfolder_when_file_has_no_parent(self):
+        sf, fn = tag_organizer._dest_subpath('img.jpg', 2)
+        assert sf == ''
+        assert fn == 'img.jpg'
 
 
 # ── move_file ─────────────────────────────────────────────────────────────────
@@ -253,6 +315,85 @@ class TestMoveFile:
 
         headers = mock_req.call_args[1]['headers']
         assert headers['Overwrite'] == 'F'
+
+    def test_should_percent_encode_cyrillic_in_src_url(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)) as mock_req:
+            tag_organizer.move_file(
+                'Photos/Свадьба/img.jpg', 'Consolidated/Photos/Wedding'
+            )
+
+        src_url = mock_req.call_args[0][1]
+        assert 'Свадьба' not in src_url
+        assert '%' in src_url
+
+    def test_should_percent_encode_cyrillic_in_destination_header(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)) as mock_req:
+            tag_organizer.move_file(
+                'Photos/iPhone/Видео Жени/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=1,
+            )
+
+        dst = mock_req.call_args[1]['headers']['Destination']
+        assert 'Видео' not in dst
+        assert ' ' not in dst
+        assert '%' in dst
+
+
+# ── move_file with keep_parents ───────────────────────────────────────────────
+
+class TestMoveFileWithParents:
+
+    def test_should_return_subfolder_path_when_keep_parents_1(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)):
+            status, dest = tag_organizer.move_file(
+                'Photos/iPhone/202207__/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=1,
+            )
+        assert status == 'moved'
+        assert dest == '202207__/img.jpg'
+
+    def test_should_return_two_level_path_when_keep_parents_2(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)):
+            status, dest = tag_organizer.move_file(
+                'Photos/iPhone/202207__/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=2,
+            )
+        assert status == 'moved'
+        assert dest == 'iPhone/202207__/img.jpg'
+
+    def test_should_include_subfolder_in_destination_url(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)) as mock_req:
+            tag_organizer.move_file(
+                'Photos/iPhone/202207__/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=1,
+            )
+        headers = mock_req.call_args[1]['headers']
+        assert 'Photos/Wedding/202207__/img.jpg' in headers['Destination']
+
+    def test_should_rename_with_suffix_inside_subfolder_when_collision(self):
+        responses = [_http(412), _http(201)]
+        with patch('tag_organizer.requests.request', side_effect=responses):
+            status, dest = tag_organizer.move_file(
+                'Photos/iPhone/202207__/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=1,
+            )
+        assert status == 'renamed'
+        assert dest == '202207__/img_2.jpg'
+
+    def test_should_use_flat_dest_when_keep_parents_0(self):
+        with patch('tag_organizer.requests.request', return_value=_http(201)):
+            status, dest = tag_organizer.move_file(
+                'Photos/iPhone/202207__/img.jpg',
+                'Consolidated/Photos/Wedding',
+                keep_parents=0,
+            )
+        assert status == 'moved'
+        assert dest == 'img.jpg'
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -392,3 +533,32 @@ class TestMain:
         assert 'size_moved_hr' in report['summary']
         assert 'size_failed_hr' in report['summary']
         assert report['summary']['size_total_hr'] == '2.9 MB'
+
+    def test_should_pre_create_unique_subfolders_when_keep_parents_set(self, tmp_path):
+        files = [
+            {'path': 'Photos/iPhone/202207__/img1.jpg', 'size': 1000},
+            {'path': 'Photos/Android/202208__/img2.jpg', 'size': 2000},
+            {'path': 'Photos/iPhone/202207__/img3.jpg', 'size': 1000},  # same subfolder
+        ]
+        with patch('tag_organizer.get_tagged_files', return_value=files), \
+             patch('tag_organizer.ensure_folder') as mock_folder, \
+             patch('tag_organizer.move_file', return_value=('moved', 'x/img.jpg')), \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.main(tag='wedding', folder='Photos/Wedding', keep_parents=1)
+
+        folder_calls = [c[0][0] for c in mock_folder.call_args_list]
+        assert 'Consolidated/Photos/Wedding' in folder_calls
+        assert 'Consolidated/Photos/Wedding/202207__' in folder_calls
+        assert 'Consolidated/Photos/Wedding/202208__' in folder_calls
+        # Each unique subfolder created only once
+        assert folder_calls.count('Consolidated/Photos/Wedding/202207__') == 1
+
+    def test_should_pass_keep_parents_to_move_file(self, tmp_path):
+        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+             patch('tag_organizer.ensure_folder'), \
+             patch('tag_organizer.move_file', return_value=('moved', 'x.jpg')) as mock_move, \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.main(tag='wedding', folder='Photos/Wedding', keep_parents=2)
+
+        for c in mock_move.call_args_list:
+            assert c[0][2] == 2  # third positional arg is keep_parents
