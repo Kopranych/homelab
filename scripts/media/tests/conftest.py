@@ -9,6 +9,9 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+# Run ID used across incremental-mode fixtures and tests
+INCREMENTAL_RUN_ID = "test-run-2026"
+
 
 @pytest.fixture
 def tmp_consolidation_root(tmp_path):
@@ -110,6 +113,56 @@ def sample_manifest(tmp_consolidation_root):
         with open(manifest_path, 'w') as f:
             json.dump(manifest, f)
         return manifest_path
+
+    return _write
+
+
+@pytest.fixture
+def incremental_config(sample_config, tmp_consolidation_root):
+    """sample_config extended with incremental mode settings (run_id + compare_final)."""
+    inc = (sample_config.config
+           .setdefault('photo_consolidation', {})
+           .setdefault('incremental', {}))
+    inc['run_id'] = INCREMENTAL_RUN_ID
+    inc['compare_final'] = str(tmp_consolidation_root / 'final')
+    return sample_config
+
+
+@pytest.fixture
+def sample_final_exists_group_report(tmp_consolidation_root):
+    """Factory: write an EXISTS_IN_FINAL group report file to a given groups subdir."""
+
+    def _write(group_number, group_hash, final_path, incoming_paths, run_id=None):
+        if run_id:
+            groups_dir = tmp_consolidation_root / 'duplicates' / 'groups' / run_id
+        else:
+            groups_dir = tmp_consolidation_root / 'duplicates' / 'groups'
+        groups_dir.mkdir(parents=True, exist_ok=True)
+        group_file = groups_dir / f'group_{group_number:05d}.txt'
+
+        lines = [
+            f"=== Duplicate Group {group_number:05d} ===",
+            f"Hash: {group_hash}",
+            f"Files: {1 + len(incoming_paths)}",
+            f"Type: EXISTS_IN_FINAL",
+            "",
+            "Already in final collection (authoritative \u2014 will NOT be re-copied):",
+            f"[1] EXISTS_IN_FINAL - Score: N/A  ALREADY IN COLLECTION",
+            f"    Full: {final_path}",
+            "",
+        ]
+        for i, inc_path in enumerate(incoming_paths, start=2):
+            lines.extend([
+                f"[{i}] SKIP - Score: 75/100",
+                f"    Full: {inc_path}",
+                f"    Size: 1.0MB",
+                f"    Format: JPG",
+                f"    Folder: incoming",
+                "",
+            ])
+        lines.append("Action: Skip - file already exists in final collection")
+        group_file.write_text('\n'.join(lines), encoding='utf-8')
+        return group_file
 
     return _write
 

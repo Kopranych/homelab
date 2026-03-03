@@ -135,6 +135,16 @@ class Config:
         """Check if YYYY-MM date suffix should be added to parent folders from EXIF."""
         return self.get('photo_consolidation.process.add_date_suffix', True)
     
+    def get_run_id(self) -> Optional[str]:
+        """Get incremental run identifier (used for isolated report subdirectories)."""
+        value = self.get('photo_consolidation.incremental.run_id')
+        return value if value else None
+
+    def get_compare_final_dir(self) -> Optional[str]:
+        """Get path to existing final/ dir to check against during incremental run."""
+        value = self.get('photo_consolidation.incremental.compare_final')
+        return value if value else None
+
     def is_dry_run(self) -> bool:
         """Check if this is a dry run."""
         return self.get('photo_consolidation.process.dry_run', True)

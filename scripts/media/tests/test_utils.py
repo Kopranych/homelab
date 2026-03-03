@@ -161,6 +161,59 @@ def test_should_create_manifest_entry_when_file_provided():
         assert isinstance(entry['modified'], float), "Modified time should be float"
         
         print(f"✅ Manifest entry created with hash {entry['hash'][:16]}...")
-        
+
     finally:
         temp_file.unlink()
+
+
+# ===========================================================================
+# build_directory_hashes tests
+# ===========================================================================
+
+class TestBuildDirectoryHashes:
+    """Tests for build_directory_hashes() — the incremental run helper."""
+
+    def test_should_build_hash_map_when_directory_has_files(self):
+        """Should return {sha256: path_str} for each unique file found recursively."""
+        from photo_consolidator.utils import build_directory_hashes, calculate_sha256
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            (base / 'a.jpg').write_bytes(b'content-a')
+            (base / 'subdir').mkdir()
+            (base / 'subdir' / 'b.jpg').write_bytes(b'content-b')
+
+            result = build_directory_hashes(base)
+
+            hash_a = calculate_sha256(base / 'a.jpg')
+            hash_b = calculate_sha256(base / 'subdir' / 'b.jpg')
+
+            assert hash_a in result
+            assert hash_b in result
+            assert result[hash_a] == str(base / 'a.jpg')
+            assert result[hash_b] == str(base / 'subdir' / 'b.jpg')
+            assert len(result) == 2
+
+    def test_should_return_empty_dict_when_directory_is_empty(self):
+        """Should return an empty dict when the scanned directory has no files."""
+        from photo_consolidator.utils import build_directory_hashes
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = build_directory_hashes(Path(tmp_dir))
+            assert result == {}
+
+    def test_should_keep_first_entry_when_two_files_share_same_content(self):
+        """Should not duplicate hash entries when two files contain identical bytes."""
+        from photo_consolidator.utils import build_directory_hashes, calculate_sha256
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            (base / 'copy1.jpg').write_bytes(b'same-content')
+            (base / 'copy2.jpg').write_bytes(b'same-content')
+
+            result = build_directory_hashes(base)
+
+            real_hash = calculate_sha256(base / 'copy1.jpg')
+            assert real_hash in result
+            # Only one entry for the shared hash
+            assert len(result) == 1

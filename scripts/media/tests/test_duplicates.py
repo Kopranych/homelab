@@ -223,3 +223,155 @@ class TestSafetyCheck:
         results = detector.analyze_duplicates()
         assert len(results['warnings']) >= 1
         assert 'High duplicate percentage' in results['warnings'][0]
+
+
+class TestIncrementalRunId:
+    """Verify that incremental mode isolates outputs in the run_id subdirectory."""
+
+    def test_groups_dir_uses_run_id_subdir_when_set(
+        self, incremental_config, tmp_consolidation_root
+    ):
+        """DuplicateDetector.groups_dir should be duplicates/groups/<run_id>/ when run_id is set."""
+        run_id = incremental_config.get_run_id()
+        detector = DuplicateDetector(incremental_config)
+        expected = Path(incremental_config.get_consolidation_root()) / 'duplicates' / 'groups' / run_id
+        assert detector.groups_dir == expected
+
+    def test_old_group_files_preserved_during_incremental_analyze(
+        self, incremental_config, sample_manifest, create_test_files, tmp_consolidation_root
+    ):
+        """Group files from a previous full run must not be deleted by an incremental analyze."""
+        # Simulate a leftover group file from run 1
+        old_group = tmp_consolidation_root / 'duplicates' / 'groups' / 'group_00001.txt'
+        old_group.write_text('old group content', encoding='utf-8')
+
+        # Minimal manifest so analyze() completes without error
+        f = create_test_files('drv/photo.jpg', b'content')
+        sample_manifest([{'path': str(f), 'relative_path': 'drv/photo.jpg',
+                          'size': 100, 'hash': 'uniq-hash-abc'}])
+
+        detector = DuplicateDetector(incremental_config)
+        detector.analyze_duplicates()
+
+        assert old_group.exists(), "Old root group file must survive incremental analyze"
+
+    def test_summary_report_uses_run_id_suffix(
+        self, incremental_config, sample_manifest, create_test_files, tmp_consolidation_root
+    ):
+        """Summary report filename must contain the run_id when in incremental mode."""
+        run_id = incremental_config.get_run_id()
+        f = create_test_files('drv/photo.jpg', b'content')
+        sample_manifest([{'path': str(f), 'relative_path': 'drv/photo.jpg',
+                          'size': 100, 'hash': 'uniq-hash-xyz'}])
+
+        detector = DuplicateDetector(incremental_config)
+        detector.analyze_duplicates()
+
+        reports_dir = tmp_consolidation_root / 'duplicates' / 'reports'
+        matching = list(reports_dir.glob(f'*{run_id}*'))
+        assert len(matching) >= 1, (
+            f"Expected at least one report file containing '{run_id}' in {reports_dir}"
+        )
+
+
+class TestCompareAgainstFinal:
+    """Verify duplicate-against-final/ detection in incremental mode."""
+
+    def test_file_in_final_classified_as_exists_in_final(
+        self, incremental_config, sample_manifest, create_test_files, tmp_consolidation_root
+    ):
+        """A file whose SHA256 already exists in final/ must be counted as exists_in_final."""
+        from photo_consolidator.utils import calculate_sha256
+
+        final_file = tmp_consolidation_root / 'final' / 'photos' / 'vacation.jpg'
+        final_file.parent.mkdir(parents=True, exist_ok=True)
+        final_file.write_bytes(b'already-consolidated-content')
+        real_hash = calculate_sha256(final_file)
+
+        incoming = create_test_files('drv/vacation.jpg', b'incoming-copy')
+        sample_manifest([{
+            'path': str(incoming), 'relative_path': 'drv/vacation.jpg',
+            'size': incoming.stat().st_size, 'hash': real_hash,
+        }])
+
+        detector = DuplicateDetector(incremental_config)
+        results = detector.analyze_duplicates()
+
+        assert results['exists_in_final'] == 1
+        assert results['duplicate_groups'] == 0
+        assert results['unique_files'] == 0
+
+    def test_file_not_in_final_classified_as_unique(
+        self, incremental_config, sample_manifest, create_test_files
+    ):
+        """A file whose hash is absent from final/ must be treated as a new unique file."""
+        incoming = create_test_files('drv/new.jpg', b'brand-new-photo')
+        sample_manifest([{
+            'path': str(incoming), 'relative_path': 'drv/new.jpg',
+            'size': incoming.stat().st_size, 'hash': 'hash-not-in-final',
+        }])
+
+        detector = DuplicateDetector(incremental_config)
+        results = detector.analyze_duplicates()
+
+        assert results['exists_in_final'] == 0
+        assert results['unique_files'] == 1
+
+    def test_exists_in_final_count_multiple_files(
+        self, incremental_config, sample_manifest, create_test_files, tmp_consolidation_root
+    ):
+        """All files already present in final/ are reflected in the exists_in_final count."""
+        from photo_consolidator.utils import calculate_sha256
+
+        final_dir = tmp_consolidation_root / 'final'
+        hashes = []
+        for i in range(3):
+            f = final_dir / f'photo{i}.jpg'
+            f.write_bytes(f'unique-content-{i}'.encode())
+            hashes.append(calculate_sha256(f))
+
+        incoming_files = [
+            create_test_files(f'drv/photo{i}.jpg', b'incoming-placeholder')
+            for i in range(3)
+        ]
+        sample_manifest([
+            {
+                'path': str(incoming_files[i]),
+                'relative_path': f'drv/photo{i}.jpg',
+                'size': incoming_files[i].stat().st_size,
+                'hash': hashes[i],
+            }
+            for i in range(3)
+        ])
+
+        detector = DuplicateDetector(incremental_config)
+        results = detector.analyze_duplicates()
+
+        assert results['exists_in_final'] == 3
+
+    def test_exists_in_final_group_file_has_type_marker(
+        self, incremental_config, sample_manifest, create_test_files, tmp_consolidation_root
+    ):
+        """The written group file for an EXISTS_IN_FINAL match must contain 'Type: EXISTS_IN_FINAL'."""
+        from photo_consolidator.utils import calculate_sha256
+
+        final_file = tmp_consolidation_root / 'final' / 'img.jpg'
+        final_file.write_bytes(b'in-final-content')
+        real_hash = calculate_sha256(final_file)
+
+        incoming = create_test_files('drv/img.jpg', b'incoming-copy')
+        sample_manifest([{
+            'path': str(incoming), 'relative_path': 'drv/img.jpg',
+            'size': incoming.stat().st_size, 'hash': real_hash,
+        }])
+
+        run_id = incremental_config.get_run_id()
+        detector = DuplicateDetector(incremental_config)
+        detector.analyze_duplicates()
+
+        groups_dir = Path(incremental_config.get_consolidation_root()) / 'duplicates' / 'groups' / run_id
+        group_files = list(groups_dir.glob('group_*.txt'))
+        assert len(group_files) >= 1
+
+        content = group_files[0].read_text(encoding='utf-8')
+        assert 'Type: EXISTS_IN_FINAL' in content

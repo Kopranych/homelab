@@ -26,6 +26,10 @@
     script_dir: "{{ playbook_dir }}/../../scripts"
     incoming_dir: "{{ data_root }}/incoming"
 
+    # Incremental run support (reads from photo_consolidation.incremental in config.yml)
+    _run_id: "{{ photo_config.incremental.run_id | default('') }}"
+    groups_dir: "{{ data_root }}/duplicates/groups{% if _run_id %}/{{ _run_id }}{% endif %}"
+
     # Python deployment
     python_deploy_dir: "/opt/photo-consolidator"
     python_venv_dir: "{{ python_deploy_dir }}/venv"
@@ -150,6 +154,16 @@
             - duplicates/reports
             - final
             - logs
+
+        - name: "[Phase 1] Creating incremental run subdir (if run_id is set)..."
+          file:
+            path: "{{ groups_dir }}"
+            state: directory
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: '0755'
+          become: yes
+          when: _run_id != ''
 
         - name: "[Phase 1] Creating Python deployment directory..."
           file:
@@ -297,11 +311,18 @@
 
         - name: "[Phase 3] Cleaning up old analysis reports..."
           shell: |
-            rm -f {{ data_root }}/duplicates/groups/group_*.txt
-            rm -f {{ data_root }}/duplicates/reports/copied_files_analysis.txt
-            echo "Old reports removed"
+            if [ -n "{{ _run_id }}" ]; then
+              rm -rf {{ groups_dir }}
+              mkdir -p {{ groups_dir }}
+              rm -f {{ data_root }}/duplicates/reports/copied_files_analysis_{{ _run_id }}.txt
+              echo "Incremental mode: cleared run {{ _run_id }} subdir only"
+            else
+              rm -f {{ data_root }}/duplicates/groups/group_*.txt
+              rm -f {{ data_root }}/duplicates/reports/copied_files_analysis.txt
+              echo "Fresh run: cleared all old reports"
+            fi
           register: cleanup_result
-          changed_when: "'Old reports removed' in cleanup_result.stdout"
+          changed_when: true
 
         - name: "[Phase 3] Running duplicate analysis (this may take up to 1 hour)..."
           command: "{{ consolidate_cmd }} analyze"
@@ -315,17 +336,22 @@
 
         - name: "[Phase 3] Counting duplicate groups..."
           find:
-            paths: "{{ data_root }}/duplicates/groups"
+            paths: "{{ groups_dir }}"
             patterns: "group_*.txt"
           register: duplicate_groups
 
         - name: "[Phase 3] Reading analysis report..."
           shell: |
-            if [ -f "{{ data_root }}/duplicates/reports/copied_files_analysis.txt" ]; then
-              echo "=== DUPLICATE ANALYSIS RESULTS ==="
-              head -30 "{{ data_root }}/duplicates/reports/copied_files_analysis.txt"
+            if [ -n "{{ _run_id }}" ]; then
+              report="{{ data_root }}/duplicates/reports/copied_files_analysis_{{ _run_id }}.txt"
             else
-              echo "No duplicate analysis report found"
+              report="{{ data_root }}/duplicates/reports/copied_files_analysis.txt"
+            fi
+            if [ -f "$report" ]; then
+              echo "=== DUPLICATE ANALYSIS RESULTS ==="
+              head -30 "$report"
+            else
+              echo "No duplicate analysis report found at: $report"
             fi
           register: duplicate_summary
           changed_when: false
@@ -437,14 +463,14 @@
       block:
         - name: "[Phase 6] Checking for duplicate analysis results..."
           find:
-            paths: "{{ data_root }}/duplicates/groups"
+            paths: "{{ groups_dir }}"
             patterns: "group_*.txt"
           register: duplicate_groups_check
 
         - name: Fail if no duplicate analysis found
           fail:
             msg: >-
-              No duplicate analysis found in {{ data_root }}/duplicates/groups/.
+              No duplicate analysis found in {{ groups_dir }}.
               Run Phase 3 (analysis) first: --tags phase3
           when: duplicate_groups_check.files | length == 0
 
@@ -521,7 +547,7 @@
             {% endfor %}
 
             Files copied: $(find {{ incoming_dir }} -type f 2>/dev/null | wc -l)
-            Duplicate groups: $(find {{ data_root }}/duplicates/groups -name "group_*.txt" 2>/dev/null | wc -l)
+            Duplicate groups: $(find {{ groups_dir }} -name "group_*.txt" 2>/dev/null | wc -l)
             Final collection: $(find {{ data_root }}/final -type f 2>/dev/null | wc -l) files
 
             Original drives: NEVER MODIFIED

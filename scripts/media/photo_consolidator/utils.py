@@ -8,8 +8,13 @@ import subprocess
 import psutil
 from datetime import datetime
 from pathlib import Path
-from typing import Generator, Optional, Tuple, List
+from typing import Dict, Generator, Optional, Tuple, List
 import logging
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 
 try:
     import exifread
@@ -377,6 +382,34 @@ def _extract_video_date(file_path: Path) -> Optional[Tuple[int, int]]:
     except Exception as e:
         logger.debug(f"Could not read video date from {file_path}: {e}")
     return None
+
+
+def build_directory_hashes(directory: Path) -> Dict[str, str]:
+    """
+    Scan a directory recursively and build a SHA256 → first_path mapping.
+
+    Used to build a hash index of an existing final/ collection so that
+    incremental runs can detect files that are already consolidated.
+
+    Args:
+        directory: Directory to scan (e.g. existing final/)
+
+    Returns:
+        Dict mapping sha256 hex string to the path string of the first file
+        found with that hash (duplicates within the directory are ignored).
+    """
+    hashes: Dict[str, str] = {}
+    files = [f for f in directory.rglob('*') if f.is_file()]
+    logger.info(f"Building hash index for {len(files):,} files in {directory}")
+
+    iterator = tqdm(files, desc="Indexing final/", unit="files") if tqdm else files
+    for file_path in iterator:
+        h = calculate_sha256(file_path)
+        if h and h not in hashes:
+            hashes[h] = str(file_path)
+
+    logger.info(f"Hash index built: {len(hashes):,} unique hashes in {directory}")
+    return hashes
 
 
 def get_current_timestamp():

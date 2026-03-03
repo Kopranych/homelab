@@ -14,7 +14,7 @@ except ImportError:
     Image = None
 
 from .config import Config
-from .utils import format_bytes, ensure_directory, get_current_timestamp
+from .utils import format_bytes, ensure_directory, get_current_timestamp, build_directory_hashes
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +77,17 @@ class DuplicateDetector:
         self.folder_bonuses = self.quality_config.get('folder_bonuses', {})
         self.size_thresholds = self.quality_config.get('size_thresholds', {})
         
+        # Incremental run support: use a dated subdir for groups/reports
+        self.run_id = config.get_run_id()
+        if self.run_id:
+            self.groups_dir = self.duplicates_dir / "groups" / self.run_id
+        else:
+            self.groups_dir = self.duplicates_dir / "groups"
+
         # Ensure directories exist
         ensure_directory(self.duplicates_dir)
         ensure_directory(self.duplicates_dir / "reports")
-        ensure_directory(self.duplicates_dir / "groups")
+        ensure_directory(self.groups_dir)
     
     def analyze_duplicates(self, manifest_file: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -116,7 +123,19 @@ class DuplicateDetector:
             return self._empty_results()
         
         logger.info(f"Analyzing {total_files} files for duplicates")
-        
+
+        # Incremental mode: build hash index of existing final/ to skip already-consolidated files
+        final_hashes: Dict[str, str] = {}
+        compare_final = self.config.get_compare_final_dir()
+        if compare_final:
+            final_dir = Path(compare_final)
+            if final_dir.exists():
+                logger.info(f"Incremental mode: loading hashes from existing final/: {final_dir}")
+                final_hashes = build_directory_hashes(final_dir)
+                logger.info(f"Loaded {len(final_hashes):,} existing hashes from final/")
+            else:
+                logger.warning(f"compare_final dir not found, skipping: {final_dir}")
+
         # Convert to FileInfo objects and calculate quality scores
         # Skip files that no longer exist on disk (e.g. manually removed junk)
         file_infos = []
@@ -144,16 +163,19 @@ class DuplicateDetector:
         for file_info in file_infos:
             if file_info.hash:  # Skip files without valid hash
                 hash_groups[file_info.hash].append(file_info)
-        
-        # Find duplicate groups (more than one file with same hash)
+
+        # Classify into: exists_in_final / duplicate_group / unique
         duplicate_groups = []
         unique_files = []
-        
+        exists_in_final_groups: List[Tuple[str, str, List[FileInfo]]] = []  # (hash, final_path, incoming_files)
+
         for file_hash, files_with_hash in hash_groups.items():
-            if len(files_with_hash) > 1:
-                # Sort by quality score (highest first)
+            if file_hash in final_hashes:
+                # Already consolidated — record but do not copy again
+                exists_in_final_groups.append((file_hash, final_hashes[file_hash], files_with_hash))
+            elif len(files_with_hash) > 1:
+                # Duplicate within the new batch — rank by quality
                 files_with_hash.sort(key=lambda f: f.quality_score, reverse=True)
-                
                 group = DuplicateGroup(
                     hash=file_hash,
                     files=files_with_hash,
@@ -162,12 +184,18 @@ class DuplicateDetector:
                 duplicate_groups.append(group)
             else:
                 unique_files.extend(files_with_hash)
-        
-        logger.info(f"Found {len(duplicate_groups)} duplicate groups, "
-                   f"{len(unique_files)} unique files")
-        
+
+        logger.info(
+            f"Found {len(duplicate_groups)} duplicate groups, "
+            f"{len(unique_files)} unique files, "
+            f"{len(exists_in_final_groups)} already in final/"
+        )
+
         # Generate reports
-        results = self._generate_reports(duplicate_groups, unique_files, total_files)
+        results = self._generate_reports(
+            duplicate_groups, unique_files, total_files,
+            exists_in_final_groups=exists_in_final_groups
+        )
         
         # Check for warnings
         total_duplicate_files = sum(len(g.files) for g in duplicate_groups)
@@ -183,7 +211,18 @@ class DuplicateDetector:
         return results
     
     def _cleanup_old_reports(self):
-        """Remove old group and summary reports before a fresh analysis."""
+        """Remove old group and summary reports before a fresh analysis.
+
+        In incremental mode (run_id set) this is a no-op because each run
+        writes to its own subdir — old reports are preserved automatically.
+        """
+        if self.run_id:
+            logger.info(
+                f"Incremental mode (run_id={self.run_id}): skipping cleanup, "
+                f"writing to groups/{self.run_id}/"
+            )
+            return
+
         groups_dir = self.duplicates_dir / "groups"
         removed = 0
         for old_file in groups_dir.glob("group_*.txt"):
@@ -337,30 +376,55 @@ class DuplicateDetector:
         except Exception:
             return True
 
-    def _generate_reports(self, duplicate_groups: List[DuplicateGroup],
-                         unique_files: List[FileInfo], total_files: int) -> Dict[str, Any]:
+    def _generate_reports(
+        self,
+        duplicate_groups: List[DuplicateGroup],
+        unique_files: List[FileInfo],
+        total_files: int,
+        exists_in_final_groups: Optional[List[Tuple[str, str, List["FileInfo"]]]] = None,
+    ) -> Dict[str, Any]:
         """Generate comprehensive duplicate analysis reports."""
-        
+        if exists_in_final_groups is None:
+            exists_in_final_groups = []
+
         # Calculate statistics
         total_duplicates = sum(len(group.files) for group in duplicate_groups)
         total_space_savings = sum(group.space_savings for group in duplicate_groups)
-        
-        # Generate main summary report
-        summary_report = self.duplicates_dir / "reports" / "copied_files_analysis.txt"
-        self._write_summary_report(summary_report, duplicate_groups, unique_files, 
-                                 total_files, total_space_savings)
-        
-        # Generate individual group reports
+
+        # Summary report path — use run_id suffix in incremental mode
+        if self.run_id:
+            summary_report = self.duplicates_dir / "reports" / f"copied_files_analysis_{self.run_id}.txt"
+        else:
+            summary_report = self.duplicates_dir / "reports" / "copied_files_analysis.txt"
+
+        self._write_summary_report(
+            summary_report, duplicate_groups, unique_files,
+            total_files, total_space_savings, exists_in_final_groups
+        )
+
+        # Group files go to self.groups_dir (already includes run_id subdir if set)
         group_files = []
-        for i, group in enumerate(duplicate_groups):
-            group_file = self.duplicates_dir / "groups" / f"group_{i+1:05d}.txt"
-            self._write_group_report(group_file, group, i+1)
+        group_counter = 1
+
+        # Write EXISTS_IN_FINAL groups first
+        for file_hash, final_path, incoming_files in exists_in_final_groups:
+            group_file = self.groups_dir / f"group_{group_counter:05d}.txt"
+            self._write_final_exists_group(group_file, group_counter, file_hash, final_path, incoming_files)
             group_files.append(str(group_file))
-        
+            group_counter += 1
+
+        # Write normal duplicate groups
+        for group in duplicate_groups:
+            group_file = self.groups_dir / f"group_{group_counter:05d}.txt"
+            self._write_group_report(group_file, group, group_counter)
+            group_files.append(str(group_file))
+            group_counter += 1
+
         results = {
             'total_files': total_files,
             'unique_files': len(unique_files),
             'duplicate_groups': len(duplicate_groups),
+            'exists_in_final': len(exists_in_final_groups),
             'total_duplicates': total_duplicates,
             'space_savings_bytes': total_space_savings,
             'space_savings_human': format_bytes(total_space_savings),
@@ -370,26 +434,41 @@ class DuplicateDetector:
             'warnings': [],
             'analysis_timestamp': get_current_timestamp()
         }
-        
-        logger.info(f"Generated reports: {len(group_files)} groups, "
-                   f"savings: {format_bytes(total_space_savings)}")
-        
+
+        logger.info(
+            f"Generated reports: {len(duplicate_groups)} dup groups, "
+            f"{len(exists_in_final_groups)} already-in-final groups, "
+            f"savings: {format_bytes(total_space_savings)}"
+        )
+
         return results
     
-    def _write_summary_report(self, report_file: Path, duplicate_groups: List[DuplicateGroup],
-                            unique_files: List[FileInfo], total_files: int, 
-                            total_space_savings: int):
+    def _write_summary_report(
+        self,
+        report_file: Path,
+        duplicate_groups: List[DuplicateGroup],
+        unique_files: List[FileInfo],
+        total_files: int,
+        total_space_savings: int,
+        exists_in_final_groups: Optional[List] = None,
+    ):
         """Write summary analysis report."""
-        
+        if exists_in_final_groups is None:
+            exists_in_final_groups = []
+
         with open(report_file, 'w') as f:
             f.write("=== PHOTO CONSOLIDATION DUPLICATE ANALYSIS ===\n")
             f.write(f"Generated: {get_current_timestamp()}\n")
+            if self.run_id:
+                f.write(f"Run ID: {self.run_id} (incremental mode)\n")
             f.write(f"Configuration: {self.config.config_path}\n\n")
-            
+
             f.write("=== SUMMARY STATISTICS ===\n")
             f.write(f"Total files analyzed: {total_files:,}\n")
-            f.write(f"Unique files: {len(unique_files):,}\n")
-            f.write(f"Duplicate groups: {len(duplicate_groups):,}\n")
+            f.write(f"Unique files (new): {len(unique_files):,}\n")
+            if exists_in_final_groups:
+                f.write(f"Already in final/ (skipped): {len(exists_in_final_groups):,}\n")
+            f.write(f"Duplicate groups (within batch): {len(duplicate_groups):,}\n")
             f.write(f"Total duplicates: {sum(len(g.files) for g in duplicate_groups):,}\n")
             f.write(f"Space savings: {format_bytes(total_space_savings)}\n")
             
@@ -432,6 +511,35 @@ class DuplicateDetector:
             f.write(f"Folder bonuses: {self.folder_bonuses}\n")
             f.write(f"Size thresholds: {self.size_thresholds}\n")
     
+    def _write_final_exists_group(
+        self,
+        group_file: Path,
+        group_number: int,
+        file_hash: str,
+        final_path: str,
+        incoming_files: List[FileInfo],
+    ):
+        """Write a group file for a file that already exists in final/.
+
+        The consolidator detects 'Type: EXISTS_IN_FINAL' and skips the group.
+        """
+        with open(group_file, 'w', encoding='utf-8') as f:
+            f.write(f"=== Duplicate Group {group_number:05d} ===\n")
+            f.write(f"Hash: {file_hash}\n")
+            f.write(f"Files: {1 + len(incoming_files)}\n")
+            f.write("Type: EXISTS_IN_FINAL\n\n")
+            f.write("Already in final collection (authoritative — will NOT be re-copied):\n\n")
+            f.write(f"[1] EXISTS_IN_FINAL - Score: N/A  ALREADY IN COLLECTION\n")
+            f.write(f"    Full: {final_path}\n\n")
+            f.write("New incoming copy/copies (SKIP — already consolidated):\n\n")
+            for i, file_info in enumerate(incoming_files, 2):
+                f.write(f"[{i}] SKIP - Score: {file_info.quality_score:.0f}/100\n")
+                f.write(f"    Full: {file_info.path}\n")
+                f.write(f"    Size: {format_bytes(file_info.size)}\n")
+                f.write(f"    Format: {file_info.extension.upper()}\n")
+                f.write(f"    Folder: {Path(file_info.path).parent.name}\n\n")
+            f.write("Action: Skip — file already exists in final collection\n")
+
     def _write_group_report(self, group_file: Path, group: DuplicateGroup, group_number: int):
         """Write individual duplicate group report."""
         
@@ -464,6 +572,7 @@ class DuplicateDetector:
             'total_files': 0,
             'unique_files': 0,
             'duplicate_groups': 0,
+            'exists_in_final': 0,
             'total_duplicates': 0,
             'space_savings_bytes': 0,
             'space_savings_human': '0B',

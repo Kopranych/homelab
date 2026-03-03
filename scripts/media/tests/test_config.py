@@ -3,6 +3,7 @@
 
 import sys
 import subprocess
+import yaml
 from pathlib import Path
 from photo_consolidator.config import Config
 
@@ -169,3 +170,60 @@ def test_should_provide_process_config_when_configuration_loaded():
     assert isinstance(is_dry_run, bool), "Dry run should be boolean"
     
     print(f"✅ Process config: {parallel_jobs} jobs, preserve={preserve_structure}, dry_run={is_dry_run}")
+
+
+# ===========================================================================
+# Incremental mode config accessors
+# ===========================================================================
+
+def _write_config(tmp_path, data):
+    config_path = tmp_path / 'config.yml'
+    with open(config_path, 'w') as f:
+        yaml.dump(data, f)
+    return Config(str(config_path))
+
+
+def test_should_return_run_id_when_incremental_run_id_configured(tmp_path):
+    """Should return the run_id string when photo_consolidation.incremental.run_id is set."""
+    config = _write_config(tmp_path, {
+        'photo_consolidation': {'incremental': {'run_id': '2026-03-02', 'compare_final': ''}}
+    })
+    assert config.get_run_id() == '2026-03-02'
+
+
+def test_should_return_none_when_run_id_not_set(tmp_path):
+    """Should return None when the incremental section is absent."""
+    config = _write_config(tmp_path, {'photo_consolidation': {}})
+    assert config.get_run_id() is None
+
+
+def test_should_return_none_when_run_id_is_empty_string(tmp_path):
+    """Should return None when run_id is explicitly set to empty string."""
+    config = _write_config(tmp_path, {
+        'photo_consolidation': {'incremental': {'run_id': '', 'compare_final': ''}}
+    })
+    assert config.get_run_id() is None
+
+
+def test_should_return_compare_final_dir_when_configured(tmp_path):
+    """Should return the path string when compare_final is set."""
+    config = _write_config(tmp_path, {
+        'photo_consolidation': {
+            'incremental': {'run_id': 'run1', 'compare_final': '/data/photo-consolidation/final'}
+        }
+    })
+    assert config.get_compare_final_dir() == '/data/photo-consolidation/final'
+
+
+def test_should_return_none_when_compare_final_is_empty_string(tmp_path):
+    """Should return None when compare_final is explicitly set to empty string."""
+    config = _write_config(tmp_path, {
+        'photo_consolidation': {'incremental': {'run_id': 'run1', 'compare_final': ''}}
+    })
+    assert config.get_compare_final_dir() is None
+
+
+def test_should_return_none_when_compare_final_not_set(tmp_path):
+    """Should return None when the incremental section has no compare_final key."""
+    config = _write_config(tmp_path, {'photo_consolidation': {'incremental': {'run_id': 'run1'}}})
+    assert config.get_compare_final_dir() is None

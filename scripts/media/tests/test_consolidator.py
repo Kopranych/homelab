@@ -322,3 +322,105 @@ class TestSafeDestPath:
         # New file saved with _2 suffix
         assert (final_dir / 'img_2.jpg').exists()
         assert (final_dir / 'img_2.jpg').read_bytes() == b'new-content'
+
+
+class TestIncrementalConsolidator:
+    """Verify incremental mode behaviour in PhotoConsolidator."""
+
+    def test_groups_dir_uses_run_id_subdir_when_set(
+        self, incremental_config, tmp_consolidation_root
+    ):
+        """consolidator.groups_dir must point to duplicates/groups/<run_id>/ when run_id is set."""
+        run_id = incremental_config.get_run_id()
+        consolidator = PhotoConsolidator(incremental_config)
+        expected = tmp_consolidation_root / 'duplicates' / 'groups' / run_id
+        assert consolidator.groups_dir == expected
+
+    def test_groups_dir_uses_root_when_no_run_id(
+        self, sample_config, tmp_consolidation_root
+    ):
+        """consolidator.groups_dir must point to the root duplicates/groups/ when run_id is unset."""
+        consolidator = PhotoConsolidator(sample_config)
+        expected = tmp_consolidation_root / 'duplicates' / 'groups'
+        assert consolidator.groups_dir == expected
+
+    def test_exists_in_final_group_is_skipped(
+        self, incremental_config, tmp_consolidation_root, sample_final_exists_group_report
+    ):
+        """_process_single_group must return early without copying anything for EXISTS_IN_FINAL groups."""
+        run_id = incremental_config.get_run_id()
+        group_file = sample_final_exists_group_report(
+            group_number=1,
+            group_hash='abc123',
+            final_path=str(tmp_consolidation_root / 'final' / 'photo.jpg'),
+            incoming_paths=[str(tmp_consolidation_root / 'incoming' / 'drv' / 'photo.jpg')],
+            run_id=run_id,
+        )
+
+        consolidator = PhotoConsolidator(incremental_config)
+        stats = ConsolidationStats()
+        consolidator._process_single_group(group_file, stats, dry_run=False)
+
+        assert stats.files_already_in_final == 1
+        # No files should have been copied to final/
+        final_files = list((tmp_consolidation_root / 'final').rglob('*.jpg'))
+        assert len(final_files) == 0
+
+    def test_files_already_in_final_stat_accumulates(
+        self, incremental_config, tmp_consolidation_root, sample_final_exists_group_report
+    ):
+        """files_already_in_final counter must grow for each EXISTS_IN_FINAL group processed."""
+        run_id = incremental_config.get_run_id()
+        for i in range(3):
+            sample_final_exists_group_report(
+                group_number=i + 1,
+                group_hash=f'hash{i}',
+                final_path=str(tmp_consolidation_root / 'final' / f'photo{i}.jpg'),
+                incoming_paths=[str(tmp_consolidation_root / 'incoming' / f'photo{i}.jpg')],
+                run_id=run_id,
+            )
+
+        consolidator = PhotoConsolidator(incremental_config)
+        stats = ConsolidationStats()
+        groups_dir = tmp_consolidation_root / 'duplicates' / 'groups' / run_id
+        for gf in sorted(groups_dir.glob('group_*.txt')):
+            consolidator._process_single_group(gf, stats, dry_run=False)
+
+        assert stats.files_already_in_final == 3
+
+    def test_normal_group_still_processed_in_incremental_mode(
+        self, incremental_config, tmp_consolidation_root, create_test_files
+    ):
+        """Normal KEEP/REMOVE groups must still be processed when run_id is active."""
+        keep = create_test_files('drv/photos/best.jpg', b'best-content')
+
+        run_id = incremental_config.get_run_id()
+        groups_subdir = tmp_consolidation_root / 'duplicates' / 'groups' / run_id
+        groups_subdir.mkdir(parents=True, exist_ok=True)
+        group_file = groups_subdir / 'group_00001.txt'
+        lines = [
+            "=== Duplicate Group 00001 ===",
+            "Hash: keepme",
+            "Files: 1",
+            "",
+            "Files ranked by quality (KEEP first, REMOVE others):",
+            "",
+            f"[1] KEEP - Score: 85/100 \U0001f3af BEST QUALITY",
+            f"    Full: {keep}",
+            "    Size: 5MB",
+            "    Format: JPG",
+            "    Folder: photos",
+            "",
+            "Recommendation: Keep file [1]",
+        ]
+        group_file.write_text('\n'.join(lines), encoding='utf-8')
+
+        consolidator = PhotoConsolidator(incremental_config)
+        stats = ConsolidationStats()
+        with patch('photo_consolidator.consolidator.extract_photo_date', return_value=None):
+            consolidator._process_single_group(group_file, stats, dry_run=False)
+
+        assert stats.files_already_in_final == 0
+        assert stats.total_processed > 0
+        final_file = tmp_consolidation_root / 'final' / 'photos' / 'best.jpg'
+        assert final_file.exists()

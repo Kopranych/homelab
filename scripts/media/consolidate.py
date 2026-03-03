@@ -248,13 +248,24 @@ def copy(ctx, dry_run, progress):
 
 @cli.command()
 @click.option('--manifest', '-m', help='Manifest file to analyze')
+@click.option('--run-id', help='Run identifier for isolated report subdirectory (overrides config)')
+@click.option('--compare-final', help='Path to existing final/ dir to check against (overrides config)')
 @click.pass_context
-def analyze(ctx, manifest):
+def analyze(ctx, manifest, run_id, compare_final):
     """Analyze copied files for duplicates and rank by quality."""
 
     print_header("DUPLICATE ANALYSIS PHASE")
 
     config = ctx.obj['config']
+
+    # CLI overrides for incremental mode (patch config object in-place)
+    if run_id:
+        config.config.setdefault('photo_consolidation', {}).setdefault('incremental', {})['run_id'] = run_id
+        print_info(f"Run ID override: {run_id}")
+    if compare_final:
+        config.config.setdefault('photo_consolidation', {}).setdefault('incremental', {})['compare_final'] = compare_final
+        print_info(f"Compare final override: {compare_final}")
+
     detector = DuplicateDetector(config)
 
     try:
@@ -269,8 +280,10 @@ def analyze(ctx, manifest):
 
         print_success("Duplicate analysis complete!")
         print_info(f"Total files: {results['total_files']:,}")
-        print_info(f"Unique files: {results['unique_files']:,}")
-        print_info(f"Duplicate groups: {results['duplicate_groups']:,}")
+        print_info(f"Unique files (new): {results['unique_files']:,}")
+        print_info(f"Duplicate groups (within batch): {results['duplicate_groups']:,}")
+        if results.get('exists_in_final', 0):
+            print_info(f"Already in final/ (will be skipped): {results['exists_in_final']:,}")
         print_info(f"Space savings potential: {results['space_savings_human']}")
         print_info(f"Duplicate percentage: {results['duplicate_percentage']:.1f}%")
 
@@ -293,13 +306,20 @@ def analyze(ctx, manifest):
 @cli.command()
 @click.option('--dry-run/--no-dry-run', default=None, help='Perform dry run (override config)')
 @click.option('--report', '-r', help='Save report to specific file')
+@click.option('--run-id', help='Run identifier matching the analyze run (overrides config)')
 @click.pass_context
-def consolidate(ctx, dry_run, report):
+def consolidate(ctx, dry_run, report, run_id):
     """Consolidate files by removing duplicates and organizing."""
 
     print_header("CONSOLIDATION PHASE")
 
     config = ctx.obj['config']
+
+    # CLI override for incremental mode
+    if run_id:
+        config.config.setdefault('photo_consolidation', {}).setdefault('incremental', {})['run_id'] = run_id
+        print_info(f"Run ID override: {run_id}")
+
     consolidator = PhotoConsolidator(config)
     reporter = ConsolidationReporter(config)
 
@@ -322,7 +342,9 @@ def consolidate(ctx, dry_run, report):
         stats = results['statistics']
         print_success("Consolidation complete!")
         print_info(f"Files kept: {stats['files_kept']:,}")
-        print_info(f"Files removed: {stats['files_removed']:,}")
+        print_info(f"Files removed (deduped): {stats['files_removed']:,}")
+        if stats.get('files_already_in_final', 0):
+            print_info(f"Skipped (already in final/): {stats['files_already_in_final']:,}")
         print_info(f"Space saved: {stats['space_saved_human']}")
         print_info(f"Final collection: {stats['final_collection_files']:,} files")
 

@@ -127,12 +127,29 @@ class MediaScanner:
     def create_combined_manifest(self) -> str:
         """Merge per-drive _copied_manifest.json files into copied_files_combined.json.
 
+        Only combines manifests for drives currently listed in config — drives
+        that have been removed or commented out are automatically excluded.
+
         Returns the path to the combined manifest file.
         """
         combined_files: List[Dict[str, Any]] = []
         total_size = 0
 
-        manifest_files = list(self.manifests_dir.glob("*_copied_manifest.json"))
+        source_drives = self.config.get('infrastructure.storage.source_drives', [])
+        if source_drives:
+            drive_labels = [
+                d.get('label', Path(d.get('path', '')).name)
+                for d in source_drives
+            ]
+            manifest_files = [
+                self.manifests_dir / f"{label}_copied_manifest.json"
+                for label in drive_labels
+                if (self.manifests_dir / f"{label}_copied_manifest.json").exists()
+            ]
+            logger.info(f"Combining manifests for configured drives: {drive_labels}")
+        else:
+            manifest_files = list(self.manifests_dir.glob("*_copied_manifest.json"))
+
         if not manifest_files:
             raise FileNotFoundError(
                 f"No per-drive copied manifests found in {self.manifests_dir}. "

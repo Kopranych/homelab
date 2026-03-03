@@ -31,8 +31,9 @@ class ConsolidationStats:
     files_removed: int = 0
     space_saved: int = 0
     unique_files_copied: int = 0
+    files_already_in_final: int = 0
     errors: List[str] = None
-    
+
     def __post_init__(self):
         if self.errors is None:
             self.errors = []
@@ -55,7 +56,13 @@ class PhotoConsolidator:
         self.final_dir = self.data_root / "final"
         self.backup_dir = self.data_root / "backup" / "consolidation"
         self.manifests_dir = self.data_root / "manifests"
-        
+
+        # Incremental run support: read groups from run_id subdir if set
+        run_id = config.get_run_id()
+        self.run_id = run_id
+        groups_base = self.duplicates_dir / "groups"
+        self.groups_dir = groups_base / run_id if run_id else groups_base
+
         # Ensure directories exist
         ensure_directory(self.final_dir)
         if self.config.should_backup_before_removal():
@@ -130,8 +137,8 @@ class PhotoConsolidator:
             raise ValueError(f"Incoming directory not found: {self.incoming_dir}")
         
         # Process duplicate groups if analysis was done
-        if self.duplicates_dir.exists() and (self.duplicates_dir / "groups").exists():
-            logger.info("Processing duplicate groups")
+        if self.groups_dir.exists():
+            logger.info(f"Processing duplicate groups from {self.groups_dir}")
             self._process_duplicate_groups(stats, dry_run)
         else:
             logger.warning("No duplicate analysis found, processing all files as unique")
@@ -151,9 +158,8 @@ class PhotoConsolidator:
     
     def _process_duplicate_groups(self, stats: ConsolidationStats, dry_run: bool):
         """Process duplicate groups according to quality rankings."""
-        
-        groups_dir = self.duplicates_dir / "groups"
-        group_files = list(groups_dir.glob("group_*.txt"))
+
+        group_files = list(self.groups_dir.glob("group_*.txt"))
         
         if not group_files:
             logger.warning("No duplicate group files found")
@@ -173,11 +179,22 @@ class PhotoConsolidator:
     
     def _process_single_group(self, group_file: Path, stats: ConsolidationStats, dry_run: bool):
         """Process a single duplicate group."""
-        
+
+        # Detect EXISTS_IN_FINAL groups (created during incremental analyze phase)
+        # These files are already in the final collection — skip entirely
+        with open(group_file, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if line.strip().startswith('Type: EXISTS_IN_FINAL'):
+                    stats.files_already_in_final += 1
+                    logger.debug(f"Skipping EXISTS_IN_FINAL group: {group_file.name}")
+                    return
+                if i >= 10:
+                    break
+
         # Parse group file to extract file paths and rankings
         files_to_remove = []
         best_file = None
-        
+
         with open(group_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
@@ -387,6 +404,7 @@ class PhotoConsolidator:
                 'files_kept': stats.files_kept,
                 'files_removed': stats.files_removed,
                 'unique_files_copied': stats.unique_files_copied,
+                'files_already_in_final': stats.files_already_in_final,
                 'space_saved_bytes': stats.space_saved,
                 'space_saved_human': format_bytes(stats.space_saved),
                 'final_collection_files': final_count,
@@ -449,11 +467,10 @@ class PhotoConsolidator:
         expected_hashes = set()
 
         # From duplicate groups: each group's hash = one expected file
-        groups_dir = self.duplicates_dir / "groups"
         group_count = 0
-        if groups_dir.exists():
-            group_files = list(groups_dir.glob("group_*.txt"))
-            logger.info(f"Reading hashes from {len(group_files)} duplicate groups")
+        if self.groups_dir.exists():
+            group_files = list(self.groups_dir.glob("group_*.txt"))
+            logger.info(f"Reading hashes from {len(group_files)} groups in {self.groups_dir}")
             for gf in tqdm(group_files, desc="Reading group hashes", unit="groups"):
                 group_hash = self._parse_group_hash(gf)
                 if group_hash:
@@ -531,9 +548,17 @@ class PhotoConsolidator:
 
     @staticmethod
     def _parse_group_hash(group_file: Path) -> Optional[str]:
-        """Extract the SHA256 hash from a group report file header."""
+        """Extract the SHA256 hash from a group report file header.
+
+        Returns None for EXISTS_IN_FINAL groups (already counted in existing final/).
+        """
+        result_hash = None
         with open(group_file, 'r', encoding='utf-8') as f:
-            for line in f:
+            for i, line in enumerate(f):
                 if line.startswith('Hash:'):
-                    return line.split(':', 1)[1].strip()
-        return None
+                    result_hash = line.split(':', 1)[1].strip()
+                elif line.strip().startswith('Type: EXISTS_IN_FINAL'):
+                    return None  # Skip — file was already in final/ before this run
+                if i >= 10:
+                    break
+        return result_hash
