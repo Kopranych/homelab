@@ -62,37 +62,46 @@ class TestFormatBytes:
         assert tag_organizer.format_bytes(1024 ** 4) == '1.0 TB'
 
 
-# ── get_tagged_files ──────────────────────────────────────────────────────────
+# ── get_tagged_items ──────────────────────────────────────────────────────────
 
-class TestGetTaggedFiles:
+class TestGetTaggedItems:
 
-    def test_should_return_file_list_when_tag_has_matches(self):
+    def test_should_return_files_with_is_dir_false(self):
         rows = [
-            ('Photos/Wedding/IMG_001.JPG', 1_048_576),
-            ('Photos/Anna/IMG_002.JPG',   2_097_152),
+            ('Photos/Wedding/IMG_001.JPG', 1_048_576, False),
+            ('Photos/Anna/IMG_002.JPG',   2_097_152, False),
         ]
         mock_connect, _ = _db_mock(rows)
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
-            result = tag_organizer.get_tagged_files('wedding')
+            result = tag_organizer.get_tagged_items('wedding')
 
         assert len(result) == 2
-        assert result[0] == {'path': 'Photos/Wedding/IMG_001.JPG', 'size': 1_048_576}
-        assert result[1] == {'path': 'Photos/Anna/IMG_002.JPG',   'size': 2_097_152}
+        assert result[0] == {'path': 'Photos/Wedding/IMG_001.JPG', 'size': 1_048_576, 'is_dir': False}
+        assert result[1] == {'path': 'Photos/Anna/IMG_002.JPG',   'size': 2_097_152, 'is_dir': False}
+
+    def test_should_return_folders_with_is_dir_true(self):
+        rows = [('Photos/Свадьба', 4096, True)]
+        mock_connect, _ = _db_mock(rows)
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.get_tagged_items('wedding')
+
+        assert result[0] == {'path': 'Photos/Свадьба', 'size': 4096, 'is_dir': True}
 
     def test_should_return_empty_list_when_tag_has_no_matches(self):
         mock_connect, _ = _db_mock([])
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
-            result = tag_organizer.get_tagged_files('nonexistent')
+            result = tag_organizer.get_tagged_items('nonexistent')
 
         assert result == []
 
     def test_should_use_zero_size_when_db_returns_none(self):
-        mock_connect, _ = _db_mock([('Photos/file.JPG', None)])
+        mock_connect, _ = _db_mock([('Photos/file.JPG', None, False)])
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
-            result = tag_organizer.get_tagged_files('wedding')
+            result = tag_organizer.get_tagged_items('wedding')
 
         assert result[0]['size'] == 0
 
@@ -100,7 +109,7 @@ class TestGetTaggedFiles:
         mock_connect, cur = _db_mock([])
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
-            tag_organizer.get_tagged_files('vacation_2021')
+            tag_organizer.get_tagged_items('vacation_2021')
 
         cur.execute.assert_called_once()
         _, params = cur.execute.call_args[0]
@@ -110,7 +119,7 @@ class TestGetTaggedFiles:
         mock_connect, cur = _db_mock([])
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
-            tag_organizer.get_tagged_files('wedding')
+            tag_organizer.get_tagged_items('wedding')
 
         cur.close.assert_called_once()
         mock_connect.return_value.close.assert_called_once()
@@ -427,12 +436,12 @@ class TestMoveFileWithParents:
 class TestMain:
 
     _FILES = [
-        {'path': 'Photos/iPhone_Anna/IMG_001.JPG', 'size': 1_000_000},
-        {'path': 'Photos/iPhone_Ilya/DSC_001.JPG', 'size': 2_000_000},
+        {'path': 'Photos/iPhone_Anna/IMG_001.JPG', 'size': 1_000_000, 'is_dir': False},
+        {'path': 'Photos/iPhone_Ilya/DSC_001.JPG', 'size': 2_000_000, 'is_dir': False},
     ]
 
-    def test_should_not_call_ensure_folder_when_no_tagged_files(self):
-        with patch('tag_organizer.get_tagged_files', return_value=[]), \
+    def test_should_not_call_ensure_folder_when_no_tagged_items(self):
+        with patch('tag_organizer.get_tagged_items', return_value=[]), \
              patch('tag_organizer.ensure_folder') as mock_folder, \
              patch('tag_organizer.move_file') as mock_move:
             tag_organizer.main(tag='wedding', folder='Photos/Wedding')
@@ -441,7 +450,7 @@ class TestMain:
         mock_move.assert_not_called()
 
     def test_should_not_move_files_when_dry_run(self):
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder') as mock_folder, \
              patch('tag_organizer.move_file') as mock_move:
             tag_organizer.main(tag='wedding', folder='Photos/Wedding', dry_run=True)
@@ -450,7 +459,7 @@ class TestMain:
         mock_move.assert_not_called()
 
     def test_should_write_json_report_after_run(self, tmp_path):
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', return_value=('moved', 'IMG_001.JPG')), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -464,7 +473,7 @@ class TestMain:
 
     def test_should_count_all_moved_when_all_succeed(self, tmp_path):
         move_results = [('moved', 'IMG_001.JPG'), ('moved', 'DSC_001.JPG')]
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', side_effect=move_results), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -472,12 +481,11 @@ class TestMain:
 
         report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
         assert report['summary']['files_moved']   == 2
-        assert report['summary']['files_renamed'] == 0
         assert report['summary']['files_failed']  == 0
 
     def test_should_count_renamed_separately_from_moved(self, tmp_path):
         move_results = [('moved', 'IMG_001.JPG'), ('renamed', 'DSC_001_2.JPG')]
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', side_effect=move_results), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -485,13 +493,12 @@ class TestMain:
 
         report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
         assert report['summary']['files_moved']   == 1
-        assert report['summary']['files_renamed'] == 1
-        assert len(report['renamed_files'])       == 1
-        assert report['renamed_files'][0]['dest'] == 'DSC_001_2.JPG'
+        assert len(report['renamed_items'])       == 1
+        assert report['renamed_items'][0]['dest'] == 'DSC_001_2.JPG'
 
     def test_should_count_skipped_files_in_report(self, tmp_path):
         move_results = [('moved', 'IMG_001.JPG'), ('skipped', 'DSC_001.JPG')]
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', side_effect=move_results), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -500,11 +507,11 @@ class TestMain:
         report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
         assert report['summary']['files_skipped'] == 1
         assert report['summary']['files_moved']   == 1
-        assert len(report['skipped_files'])       == 1
+        assert len(report['skipped_items'])       == 1
 
     def test_should_count_failed_files_in_report(self, tmp_path):
         move_results = [('moved', 'IMG_001.JPG'), ('failed', 'DSC_001.JPG')]
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', side_effect=move_results), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -512,12 +519,11 @@ class TestMain:
 
         report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
         assert report['summary']['files_failed'] == 1
-        assert len(report['failed_files'])       == 1
+        assert len(report['failed_items'])       == 1
 
     def test_should_compute_size_totals_correctly_when_mixed_results(self, tmp_path):
-        # File 1 (1 MB) moved, File 2 (2 MB) failed
         move_results = [('moved', 'IMG_001.JPG'), ('failed', 'DSC_001.JPG')]
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', side_effect=move_results), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -529,19 +535,18 @@ class TestMain:
         assert report['summary']['size_failed'] == 2_000_000
 
     def test_should_include_renamed_size_in_moved_total(self, tmp_path):
-        # Both files succeed: one moved, one renamed — both contribute to size_moved
         move_results = [('moved', 'IMG_001.JPG'), ('renamed', 'DSC_001_2.JPG')]
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', side_effect=move_results), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
             tag_organizer.main(tag='wedding', folder='Photos/Wedding')
 
         report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
-        assert report['summary']['size_moved'] == 3_000_000  # 1 MB + 2 MB
+        assert report['summary']['size_moved'] == 3_000_000
 
     def test_should_prepend_webdav_root_to_target_folder(self, tmp_path):
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', return_value=('moved', 'x.jpg')), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -551,7 +556,7 @@ class TestMain:
         assert report['target_folder'] == 'Consolidated/Photos/Vacation2021'
 
     def test_should_strip_leading_and_trailing_slashes_from_folder(self, tmp_path):
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', return_value=('moved', 'x.jpg')), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -561,7 +566,7 @@ class TestMain:
         assert report['target_folder'] == 'Consolidated/Photos/Wedding'
 
     def test_should_include_human_readable_sizes_in_report(self, tmp_path):
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', return_value=('moved', 'x.jpg')), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -573,13 +578,13 @@ class TestMain:
         assert 'size_failed_hr' in report['summary']
         assert report['summary']['size_total_hr'] == '2.9 MB'
 
-    def test_should_pre_create_unique_subfolders_when_keep_parents_set(self, tmp_path):
+    def test_should_deduplicate_ensure_folder_calls_for_same_parent(self, tmp_path):
         files = [
-            {'path': 'Photos/iPhone/202207__/img1.jpg', 'size': 1000},
-            {'path': 'Photos/Android/202208__/img2.jpg', 'size': 2000},
-            {'path': 'Photos/iPhone/202207__/img3.jpg', 'size': 1000},  # same subfolder
+            {'path': 'Photos/iPhone/202207__/img1.jpg', 'size': 1000, 'is_dir': False},
+            {'path': 'Photos/Android/202208__/img2.jpg', 'size': 2000, 'is_dir': False},
+            {'path': 'Photos/iPhone/202207__/img3.jpg', 'size': 1000, 'is_dir': False},
         ]
-        with patch('tag_organizer.get_tagged_files', return_value=files), \
+        with patch('tag_organizer.get_tagged_items', return_value=files), \
              patch('tag_organizer.ensure_folder') as mock_folder, \
              patch('tag_organizer.move_file', return_value=('moved', 'x/img.jpg')), \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -589,11 +594,10 @@ class TestMain:
         assert 'Consolidated/Photos/Wedding' in folder_calls
         assert 'Consolidated/Photos/Wedding/202207__' in folder_calls
         assert 'Consolidated/Photos/Wedding/202208__' in folder_calls
-        # Each unique subfolder created only once
         assert folder_calls.count('Consolidated/Photos/Wedding/202207__') == 1
 
     def test_should_pass_keep_parents_to_move_file(self, tmp_path):
-        with patch('tag_organizer.get_tagged_files', return_value=self._FILES), \
+        with patch('tag_organizer.get_tagged_items', return_value=self._FILES), \
              patch('tag_organizer.ensure_folder'), \
              patch('tag_organizer.move_file', return_value=('moved', 'x.jpg')) as mock_move, \
              patch('tag_organizer.LOG_DIR', str(tmp_path)):
@@ -601,3 +605,202 @@ class TestMain:
 
         for c in mock_move.call_args_list:
             assert c[0][2] == 2  # third positional arg is keep_parents
+
+    def test_should_move_folder_before_its_files(self, tmp_path):
+        # Tagged folder + tagged files inside it — folder should be processed first
+        items = [
+            {'path': 'Photos/Свадьба',               'size': 4096,      'is_dir': True},
+            {'path': 'Photos/Свадьба/IMG_001.JPG',   'size': 1_000_000, 'is_dir': False},
+            {'path': 'Photos/Свадьба/video.MTS',     'size': 2_000_000, 'is_dir': False},
+        ]
+        call_order = []
+        def record_move(path, *args, **kwargs):
+            call_order.append(path)
+            return ('moved', path.split('/')[-1])
+
+        with patch('tag_organizer.get_tagged_items', return_value=items), \
+             patch('tag_organizer.ensure_folder'), \
+             patch('tag_organizer.move_file', side_effect=record_move), \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
+
+        assert call_order[0] == 'Photos/Свадьба'  # folder first
+
+    def test_should_skip_files_covered_by_moved_parent_folder(self, tmp_path):
+        items = [
+            {'path': 'Photos/Свадьба',               'size': 4096,      'is_dir': True},
+            {'path': 'Photos/Свадьба/IMG_001.JPG',   'size': 1_000_000, 'is_dir': False},
+        ]
+        with patch('tag_organizer.get_tagged_items', return_value=items), \
+             patch('tag_organizer.ensure_folder'), \
+             patch('tag_organizer.move_file', return_value=('moved', 'Свадьба')), \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
+
+        report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
+        # Only the folder is moved; the file inside is automatically covered
+        assert report['summary']['folders_moved'] == 1
+        assert report['summary']['files_moved']   == 0
+        assert report['summary']['files_skipped'] == 1
+
+    def test_should_count_folders_in_report_summary(self, tmp_path):
+        items = [
+            {'path': 'Photos/Свадьба', 'size': 4096,      'is_dir': True},
+            {'path': 'Photos/img.jpg', 'size': 1_000_000, 'is_dir': False},
+        ]
+        move_results = [('moved', 'Свадьба'), ('moved', 'img.jpg')]
+        with patch('tag_organizer.get_tagged_items', return_value=items), \
+             patch('tag_organizer.ensure_folder'), \
+             patch('tag_organizer.move_file', side_effect=move_results), \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
+
+        report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
+        assert report['summary']['folders_total'] == 1
+        assert report['summary']['files_total']   == 1
+        assert report['summary']['folders_moved'] == 1
+        assert report['summary']['files_moved']   == 1
+
+
+# ── propagate_folder_tags ─────────────────────────────────────────────────────
+
+class TestPropagateFolderTags:
+    """Unit tests for propagate_folder_tags().
+
+    The function makes several DB calls in sequence:
+      1. fetchone()  — look up tag_id from oc_systemtag
+      2. fetchall()  — get list of tagged folders
+      3. fetchall()  — for each folder, get untagged files inside it
+      4. execute()   — INSERT for each untagged file
+    """
+
+    def _db_for_propagate(self, tag_id, folders, files_per_folder):
+        """Return (mock_connect, cur, conn) wired for propagate_folder_tags calls."""
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        mock_connect = MagicMock(return_value=conn)
+
+        cur.fetchone.return_value = (tag_id,) if tag_id is not None else None
+        # fetchall: first call → folders list, then one call per folder → untagged files
+        cur.fetchall.side_effect = [folders] + list(files_per_folder)
+        return mock_connect, cur, conn
+
+    def test_should_return_zeros_when_tag_not_found(self):
+        cur = MagicMock()
+        cur.fetchone.return_value = None
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        mock_connect = MagicMock(return_value=conn)
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('nonexistent')
+
+        assert result == {'folders_processed': 0, 'files_tagged': 0}
+        conn.commit.assert_not_called()
+
+    def test_should_return_zeros_when_no_tagged_folders(self):
+        mock_connect, cur, conn = self._db_for_propagate(
+            tag_id=42, folders=[], files_per_folder=[]
+        )
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('wedding')
+
+        assert result == {'folders_processed': 0, 'files_tagged': 0}
+        conn.commit.assert_not_called()
+
+    def test_should_tag_untagged_files_in_folder(self):
+        folders = [(10, 'Photos/Свадьба')]
+        untagged = [(101, 'Photos/Свадьба/IMG_001.JPG'),
+                    (102, 'Photos/Свадьба/video.MTS')]
+        mock_connect, cur, conn = self._db_for_propagate(42, folders, [untagged])
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('wedding')
+
+        assert result == {'folders_processed': 1, 'files_tagged': 2}
+        conn.commit.assert_called_once()
+
+    def test_should_be_idempotent_when_all_files_already_tagged(self):
+        folders = [(10, 'Photos/Свадьба')]
+        untagged = []  # query returns nothing → all already tagged
+        mock_connect, cur, conn = self._db_for_propagate(42, folders, [untagged])
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('wedding')
+
+        assert result == {'folders_processed': 1, 'files_tagged': 0}
+        # No INSERT calls
+        insert_calls = [c for c in cur.execute.call_args_list
+                        if 'INSERT' in str(c)]
+        assert len(insert_calls) == 0
+
+    def test_should_process_multiple_folders(self):
+        folders = [(10, 'Photos/Свадьба'), (20, 'Photos/Отпуск')]
+        files1 = [(101, 'Photos/Свадьба/img1.jpg')]
+        files2 = [(201, 'Photos/Отпуск/img2.jpg'), (202, 'Photos/Отпуск/img3.jpg')]
+        mock_connect, cur, conn = self._db_for_propagate(42, folders, [files1, files2])
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('vacation')
+
+        assert result == {'folders_processed': 2, 'files_tagged': 3}
+
+    def test_should_insert_with_correct_tag_id_and_file_id(self):
+        folders = [(10, 'Photos/Folder')]
+        untagged = [(555, 'Photos/Folder/img.jpg')]
+        mock_connect, cur, conn = self._db_for_propagate(tag_id=99, folders=folders,
+                                                         files_per_folder=[untagged])
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            tag_organizer.propagate_folder_tags('mytag')
+
+        insert_calls = [c for c in cur.execute.call_args_list
+                        if 'INSERT' in str(c)]
+        assert len(insert_calls) == 1
+        params = insert_calls[0][0][1]  # second positional arg = params tuple
+        assert params == (99, '555')    # tag_id=99, file_id='555' (cast to text)
+
+    def test_should_close_connection_after_run(self):
+        mock_connect, cur, conn = self._db_for_propagate(42, [], [])
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            tag_organizer.propagate_folder_tags('wedding')
+
+        cur.close.assert_called_once()
+        conn.close.assert_called_once()
+
+    def test_should_close_connection_when_tag_not_found(self):
+        cur = MagicMock()
+        cur.fetchone.return_value = None
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        mock_connect = MagicMock(return_value=conn)
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            tag_organizer.propagate_folder_tags('no_such_tag')
+
+        cur.close.assert_called_once()
+        conn.close.assert_called_once()
+
+
+# ── run_propagate ─────────────────────────────────────────────────────────────
+
+class TestRunPropagate:
+
+    def test_should_call_propagate_folder_tags_and_return_result(self, tmp_path):
+        expected = {'folders_processed': 2, 'files_tagged': 5}
+        with patch('tag_organizer.propagate_folder_tags', return_value=expected) as mock_prop, \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            result = tag_organizer.run_propagate('wedding')
+
+        mock_prop.assert_called_once_with('wedding')
+        assert result == expected
+
+    def test_should_create_log_file(self, tmp_path):
+        with patch('tag_organizer.propagate_folder_tags',
+                   return_value={'folders_processed': 0, 'files_tagged': 0}), \
+             patch('tag_organizer.LOG_DIR', str(tmp_path)):
+            tag_organizer.run_propagate('wedding')
+
+        logs = list(tmp_path.glob('tag_propagate_wedding_*.log'))
+        assert len(logs) == 1

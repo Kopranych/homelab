@@ -83,26 +83,35 @@ def _dest_subpath(db_path: str, keep_parents: int) -> tuple[str, str]:
     return subfolder, filename
 
 
-def get_tagged_files(tag_name: str) -> list[dict]:
-    """Return [{path, size}, …] for all files tagged with tag_name."""
+def get_tagged_items(tag_name: str) -> list[dict]:
+    """Return [{path, size, is_dir}, …] for all files AND folders tagged with tag_name.
+
+    Tagged folders are included so the entire subtree can be moved as one unit,
+    even when individual files inside are not tagged.
+    """
     conn = psycopg2.connect(**DB_CONFIG)
     cur  = conn.cursor()
     cur.execute("""
-        SELECT fc.path, fc.size
+        SELECT fc.path,
+               GREATEST(fc.size, 0),
+               mt.mimetype = 'httpd/unix-directory' AS is_dir
         FROM oc_filecache fc
         JOIN oc_systemtag_object_mapping m ON m.objectid = fc.fileid::text
         JOIN oc_systemtag t               ON t.id = m.systemtagid
+        JOIN oc_mimetypes mt              ON mt.id = fc.mimetype
         WHERE t.name = %s
           AND m.objecttype = 'files'
           AND fc.path NOT LIKE 'appdata_%%'
-          AND fc.size > 0
         ORDER BY fc.path
     """, (tag_name,))
-    files = [{'path': row[0], 'size': row[1] or 0} for row in cur.fetchall()]
+    items = [{'path': row[0], 'size': row[1] or 0, 'is_dir': bool(row[2])}
+             for row in cur.fetchall()]
     cur.close()
     conn.close()
-    log.info(f"Found {len(files)} files tagged '{tag_name}'")
-    return files
+    n_dirs  = sum(1 for i in items if i['is_dir'])
+    n_files = len(items) - n_dirs
+    log.info(f"Found {n_files} files and {n_dirs} folders tagged '{tag_name}'")
+    return items
 
 
 def ensure_folder(webdav_path: str):
@@ -117,10 +126,12 @@ def ensure_folder(webdav_path: str):
     log.info(f"Target folder ready: {webdav_path}")
 
 
-def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[str, str]:
-    """Move one file via WebDAV MOVE.
+def move_file(db_path: str, target_folder: str, keep_parents: int = 0,
+              is_dir: bool = False) -> tuple[str, str]:
+    """Move one file or folder via WebDAV MOVE.
 
-    On filename collision tries stem_2, stem_3 … stem_99 before giving up.
+    For folders, moves the entire subtree in one operation.
+    On name collision tries stem_2, stem_3 … stem_99 before giving up.
 
     Returns (status, dest_relative_path) where dest_relative_path is
     relative to target_folder:
@@ -150,7 +161,8 @@ def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[
 
         if r.status_code in (201, 204):
             status = 'moved' if counter == 1 else 'renamed'
-            log.info(f"✓ {status.upper()}: {filename} → {rel_dest}")
+            kind   = 'folder' if is_dir else 'file'
+            log.info(f"✓ {status.upper()} ({kind}): {filename} → {rel_dest}")
             return status, rel_dest
         elif r.status_code == 412:   # destination exists, try next suffix
             continue
@@ -160,6 +172,115 @@ def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[
 
     log.error(f"✗ FAILED (all 99 suffixes taken): {db_path}")
     return 'failed', f"{subfolder}/{filename}" if subfolder else filename
+
+
+# ── Propagate ─────────────────────────────────────────────────────────────────
+
+def propagate_folder_tags(tag_name: str) -> dict:
+    """Write tag_name to every untagged file inside folders that carry tag_name.
+
+    Nextcloud's tag view shows only directly-tagged items.  Tagging a folder
+    does NOT automatically surface its contents.  This function tags each file
+    recursively so they appear in the tag view for individual verification
+    before moving.
+
+    Only regular files are tagged (sub-folders are left unchanged).
+    Already-tagged files are silently skipped — the operation is idempotent.
+
+    Returns {'folders_processed': N, 'files_tagged': N}
+    """
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur  = conn.cursor()
+
+    # ── Look up tag id ─────────────────────────────────────────────────────────
+    cur.execute("SELECT id FROM oc_systemtag WHERE name = %s", (tag_name,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        log.info(f"Tag '{tag_name}' not found in DB — nothing to propagate.")
+        return {'folders_processed': 0, 'files_tagged': 0}
+    tag_id = row[0]
+
+    # ── Find all tagged folders ────────────────────────────────────────────────
+    cur.execute("""
+        SELECT fc.fileid, fc.path
+        FROM oc_filecache fc
+        JOIN oc_systemtag_object_mapping m ON m.objectid = fc.fileid::text
+        JOIN oc_systemtag t               ON t.id = m.systemtagid
+        JOIN oc_mimetypes mt              ON mt.id = fc.mimetype
+        WHERE t.name = %s
+          AND m.objecttype = 'files'
+          AND mt.mimetype = 'httpd/unix-directory'
+          AND fc.path NOT LIKE 'appdata_%%'
+        ORDER BY fc.path
+    """, (tag_name,))
+    folders = cur.fetchall()
+
+    if not folders:
+        cur.close()
+        conn.close()
+        log.info(f"No folders tagged '{tag_name}' — nothing to propagate.")
+        return {'folders_processed': 0, 'files_tagged': 0}
+
+    log.info(f"Found {len(folders)} tagged folder(s) — propagating tag to files inside…")
+    folders_processed = 0
+    files_tagged      = 0
+
+    for folder_id, folder_path in folders:
+        folders_processed += 1
+        # Files inside this folder not yet tagged
+        cur.execute("""
+            SELECT fc.fileid, fc.path
+            FROM oc_filecache fc
+            JOIN oc_mimetypes mt ON mt.id = fc.mimetype
+            WHERE fc.path LIKE %s
+              AND mt.mimetype != 'httpd/unix-directory'
+              AND fc.path NOT LIKE 'appdata_%%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM oc_systemtag_object_mapping m2
+                  WHERE m2.objectid  = fc.fileid::text
+                    AND m2.systemtagid = %s
+                    AND m2.objecttype  = 'files'
+              )
+        """, (folder_path + '/%', tag_id))
+        untagged = cur.fetchall()
+
+        log.info(f"  {folder_path}: {len(untagged)} untagged file(s)")
+        for file_id, file_path in untagged:
+            cur.execute("""
+                INSERT INTO oc_systemtag_object_mapping (systemtagid, objectid, objecttype)
+                VALUES (%s, %s, 'files')
+                ON CONFLICT DO NOTHING
+            """, (tag_id, str(file_id)))
+            files_tagged += 1
+
+        if untagged:
+            log.info(f"  ✓ Tagged {len(untagged)} file(s) in {folder_path}")
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    log.info(
+        f"Propagation complete: {folders_processed} folder(s) processed, "
+        f"{files_tagged} new file(s) tagged."
+    )
+    return {'folders_processed': folders_processed, 'files_tagged': files_tagged}
+
+
+def run_propagate(tag: str) -> dict:
+    """Set up a timestamped log file and run propagate_folder_tags."""
+    run_ts   = datetime.now()
+    run_id   = run_ts.strftime('%Y%m%d_%H%M%S')
+    log_dir  = Path(LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"tag_propagate_{tag}_{run_id}.log"
+    fh = logging.FileHandler(log_file, encoding='utf-8')
+    fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    logging.getLogger().addHandler(fh)
+    log.info(f"Log: {log_file}")
+    return propagate_folder_tags(tag)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -176,43 +297,66 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
     logging.getLogger().addHandler(fh)
     log.info(f"Log: {log_file}")
 
-    files = get_tagged_files(tag)
-    if not files:
-        log.info("No tagged files found. Tag some photos first in Nextcloud.")
+    items = get_tagged_items(tag)
+    if not items:
+        log.info("No tagged files or folders found. Tag some photos first in Nextcloud.")
         return
 
-    total_size = sum(f['size'] for f in files)
-    log.info(f"Total to process: {len(files)} files, {format_bytes(total_size)}")
+    total_size = sum(i['size'] for i in items)
+    n_dirs  = sum(1 for i in items if i['is_dir'])
+    n_files = len(items) - n_dirs
+    log.info(f"Total to process: {n_files} files, {n_dirs} folders, {format_bytes(total_size)}")
 
     if dry_run:
-        log.info(f"DRY RUN — files that would be moved (keep_parents={keep_parents}):")
-        for f in files:
-            subfolder, filename = _dest_subpath(f['path'], keep_parents)
-            dest = f"{subfolder}/{filename}" if subfolder else filename
-            log.info(f"  [{format_bytes(f['size']):>10}]  {f['path']} → {dest}")
+        log.info(f"DRY RUN — items that would be moved (keep_parents={keep_parents}):")
+        for item in items:
+            subfolder, name = _dest_subpath(item['path'], keep_parents)
+            dest = f"{subfolder}/{name}" if subfolder else name
+            kind = '[DIR] ' if item['is_dir'] else '[FILE]'
+            log.info(f"  {kind} [{format_bytes(item['size']):>10}]  {item['path']} → {dest}")
         return
 
     ensure_folder(target_folder)
 
-    # Pre-create unique destination subfolders (avoids redundant MKCOL per file)
-    if keep_parents > 0:
-        seen_subfolders: set[str] = set()
-        for f in files:
-            subfolder, _ = _dest_subpath(f['path'], keep_parents)
-            if subfolder and subfolder not in seen_subfolders:
-                ensure_folder(f"{target_folder}/{subfolder}")
-                seen_subfolders.add(subfolder)
+    # Folders first (sort by path depth so parents move before children),
+    # then files. Within each group, alphabetical order.
+    dirs  = sorted([i for i in items if     i['is_dir']], key=lambda x: (x['path'].count('/'), x['path']))
+    files = sorted([i for i in items if not i['is_dir']], key=lambda x:  x['path'])
+
+    seen_folders: set[str]   = {target_folder}  # avoid redundant MKCOL
+    moved_dir_paths: set[str] = set()            # track moved folder source paths
 
     moved, renamed, skipped, failed = [], [], [], []
-    for f in files:
-        status, dest_name = move_file(f['path'], target_folder, keep_parents)
-        entry = {**f, 'dest': dest_name}
+
+    for item in dirs + files:
+        # If a tagged parent folder was already moved, its children are already
+        # at the destination — skip without an HTTP request.
+        if any(item['path'].startswith(d + '/') for d in moved_dir_paths):
+            log.info(f"✓ COVERED: {item['path']} (inside an already-moved folder)")
+            skipped.append({**item, 'dest': '(covered by parent folder)'})
+            continue
+
+        # Ensure the destination parent folder exists (cached to avoid redundant MKCOL)
+        subfolder, _ = _dest_subpath(item['path'], keep_parents)
+        dst_parent   = f"{target_folder}/{subfolder}" if subfolder else target_folder
+        if dst_parent not in seen_folders:
+            ensure_folder(dst_parent)
+            seen_folders.add(dst_parent)
+
+        status, dest_name = move_file(item['path'], target_folder, keep_parents, item['is_dir'])
+        entry = {**item, 'dest': dest_name}
         if status == 'moved':
             moved.append(entry)
+            if item['is_dir']:
+                moved_dir_paths.add(item['path'])
         elif status == 'renamed':
             renamed.append(entry)
+            if item['is_dir']:
+                moved_dir_paths.add(item['path'])
         elif status == 'skipped':
             skipped.append(entry)
+            if item['is_dir']:
+                moved_dir_paths.add(item['path'])  # already in place
         else:
             failed.append(entry)
 
@@ -220,19 +364,24 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
     skipped_size = sum(e['size'] for e in skipped)
     failed_size  = sum(e['size'] for e in failed)
 
+    def _c(lst, is_dir): return sum(1 for e in lst if e.get('is_dir') == is_dir)
+
     report = {
         'timestamp':     run_ts.isoformat(),
         'tag':           tag,
         'target_folder': target_folder,
         'keep_parents':  keep_parents,
         'summary': {
-            'files_total':     len(files),
+            'files_total':     n_files,
+            'folders_total':   n_dirs,
             'size_total':      total_size,
             'size_total_hr':   format_bytes(total_size),
-            'files_moved':     len(moved),
-            'files_renamed':   len(renamed),
-            'files_skipped':   len(skipped),
-            'files_failed':    len(failed),
+            'files_moved':     _c(moved, False),
+            'folders_moved':   _c(moved, True),
+            'files_skipped':   _c(skipped, False),
+            'folders_skipped': _c(skipped, True),
+            'files_failed':    _c(failed, False),
+            'folders_failed':  _c(failed, True),
             'size_moved':      moved_size,
             'size_moved_hr':   format_bytes(moved_size),
             'size_skipped':    skipped_size,
@@ -240,10 +389,10 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
             'size_failed':     failed_size,
             'size_failed_hr':  format_bytes(failed_size),
         },
-        'moved_files':   moved,
-        'renamed_files': renamed,
-        'skipped_files': skipped,
-        'failed_files':  failed,
+        'moved_items':   moved,
+        'renamed_items': renamed,
+        'skipped_items': skipped,
+        'failed_items':  failed,
     }
 
     log_path = log_dir / f"tag_move_{tag}_{run_id}.json"
@@ -251,7 +400,7 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
 
     log.info(
         f"Done: {len(moved)} moved, {len(renamed)} renamed (collision), "
-        f"{len(skipped)} skipped (already in place), {len(failed)} failed | "
+        f"{len(skipped)} skipped, {len(failed)} failed | "
         f"Moved: {format_bytes(moved_size)} / {format_bytes(total_size)}"
     )
     log.info(f"Report: {log_path}")
@@ -263,12 +412,23 @@ if __name__ == '__main__':
     )
     parser.add_argument('--tag',          required=True,
                         help='Nextcloud tag name, e.g. wedding')
-    parser.add_argument('--folder',       required=True,
-                        help='Target path inside Consolidated/, e.g. Photos/Wedding')
+    parser.add_argument('--folder',       default='',
+                        help='Target path inside Consolidated/, e.g. Photos/Wedding '
+                             '(required unless --propagate is used alone)')
     parser.add_argument('--keep-parents', type=int, default=0,
                         help='Parent folders to preserve from original path (0=flat, 1=one level, 2=two levels)')
     parser.add_argument('--dry-run',      action='store_true',
                         help='List files without moving')
+    parser.add_argument('--propagate',    action='store_true',
+                        help='Tag all files inside tagged folders so they appear '
+                             'individually in the Nextcloud tag view for verification')
     args = parser.parse_args()
-    main(tag=args.tag, folder=args.folder,
-         dry_run=args.dry_run, keep_parents=args.keep_parents)
+
+    if not args.propagate and not args.folder:
+        parser.error('--folder is required unless --propagate is used')
+
+    if args.propagate:
+        run_propagate(tag=args.tag)
+    if args.folder:
+        main(tag=args.tag, folder=args.folder,
+             dry_run=args.dry_run, keep_parents=args.keep_parents)

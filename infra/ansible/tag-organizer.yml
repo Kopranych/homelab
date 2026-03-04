@@ -43,11 +43,12 @@
 
     # Required — must be passed via -e
     tag: ""       # e.g. wedding
-    folder: ""    # e.g. Photos/Wedding
+    folder: ""    # e.g. Photos/Wedding  (not required when propagate_only=true)
 
     # Optional
     dry_run: false
-    keep_parents: 0   # 0=flat, 1=keep one parent folder, 2=keep two parent folders
+    keep_parents: 0      # 0=flat, 1=keep one parent folder, 2=keep two parent folders
+    propagate_only: false  # true = only propagate tag to files inside tagged folders (no move)
 
   pre_tasks:
     - name: Validate required variables
@@ -55,7 +56,9 @@
         msg: |
           Missing required variables. Run with:
             -e "tag=wedding folder='Photos/Wedding'"
-      when: tag == '' or folder == ''
+          For propagate-only (tag files inside tagged folders without moving):
+            -e "tag=wedding propagate_only=true"
+      when: tag == '' or (folder == '' and not (propagate_only | bool))
 
     - name: Validate credentials are set
       fail:
@@ -142,13 +145,17 @@
       become: yes
 
     # ── Run the organizer ─────────────────────────────────────────────────────
-    - name: "Running tag organizer (dry_run={{ dry_run }}, keep_parents={{ keep_parents }})..."
+    - name: "Running tag organizer (propagate_only={{ propagate_only }}, dry_run={{ dry_run }}, keep_parents={{ keep_parents }})..."
       command: >
         {{ python_bin }} {{ script_path }}
         --tag {{ tag }}
+        {% if propagate_only | bool %}
+        --propagate
+        {% else %}
         --folder {{ folder }}
         {% if keep_parents | int > 0 %}--keep-parents {{ keep_parents }}{% endif %}
         {{ '--dry-run' if (dry_run | bool) else '' }}
+        {% endif %}
       register: organizer_result
       async: 3600   # 1 hour — large collections take time
       poll: 15
@@ -157,12 +164,12 @@
       debug:
         msg: "{{ organizer_result.stdout_lines | default([]) + organizer_result.stderr_lines | default([]) }}"
 
-    # ── Show JSON report (skip for dry-run) ───────────────────────────────────
+    # ── Show JSON report (skip for dry-run and propagate-only) ───────────────
     - name: "Find latest report"
       shell: "ls -t {{ log_dir }}/tag_move_{{ tag }}_*.json 2>/dev/null | head -1"
       register: latest_report
       changed_when: false
-      when: not (dry_run | bool)
+      when: not (dry_run | bool) and not (propagate_only | bool)
 
     - name: "Read report"
       command: "cat {{ latest_report.stdout }}"
@@ -170,6 +177,7 @@
       changed_when: false
       when:
         - not (dry_run | bool)
+        - not (propagate_only | bool)
         - latest_report.stdout != ''
 
     - name: "Results summary"
@@ -177,13 +185,18 @@
         msg: "{{ report_content.stdout | from_json | json_query('summary') }}"
       when:
         - not (dry_run | bool)
+        - not (propagate_only | bool)
         - report_content is defined
         - report_content.stdout is defined
 
     - name: "Done"
       debug:
         msg: >-
-          {% if dry_run | bool %}
+          {% if propagate_only | bool %}
+          Propagation complete. Open Nextcloud → Files → Tags → {{ tag }} to verify
+          individual files appear. Then re-run without propagate_only=true to move them.
+          Log: {{ log_dir }}/tag_propagate_{{ tag }}_*.log
+          {% elif dry_run | bool %}
           Dry run complete. Re-run without dry_run=true to move files.
           {% else %}
           Files moved to: Consolidated/{{ folder }}
