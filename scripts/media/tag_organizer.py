@@ -84,33 +84,31 @@ def _dest_subpath(db_path: str, keep_parents: int) -> tuple[str, str]:
 
 
 def get_tagged_items(tag_name: str) -> list[dict]:
-    """Return [{path, size, is_dir}, …] for all files AND folders tagged with tag_name.
+    """Return [{path, size}, …] for all files tagged with tag_name.
 
-    Tagged folders are included so the entire subtree can be moved as one unit,
-    even when individual files inside are not tagged.
+    Folders are excluded — use propagate_folder_tags() first so every file
+    inside a tagged folder carries the tag individually.
     """
     conn = psycopg2.connect(**DB_CONFIG)
     cur  = conn.cursor()
     cur.execute("""
         SELECT fc.path,
-               GREATEST(fc.size, 0),
-               mt.mimetype = 'httpd/unix-directory' AS is_dir
+               GREATEST(fc.size, 0)
         FROM oc_filecache fc
         JOIN oc_systemtag_object_mapping m ON m.objectid = fc.fileid::text
         JOIN oc_systemtag t               ON t.id = m.systemtagid
         JOIN oc_mimetypes mt              ON mt.id = fc.mimetype
         WHERE t.name = %s
           AND m.objecttype = 'files'
+          AND mt.mimetype != 'httpd/unix-directory'
           AND fc.path NOT LIKE 'appdata_%%'
         ORDER BY fc.path
     """, (tag_name,))
-    items = [{'path': row[0], 'size': row[1] or 0, 'is_dir': bool(row[2])}
+    items = [{'path': row[0], 'size': row[1] or 0}
              for row in cur.fetchall()]
     cur.close()
     conn.close()
-    n_dirs  = sum(1 for i in items if i['is_dir'])
-    n_files = len(items) - n_dirs
-    log.info(f"Found {n_files} files and {n_dirs} folders tagged '{tag_name}'")
+    log.info(f"Found {len(items)} files tagged '{tag_name}'")
     return items
 
 
@@ -126,11 +124,9 @@ def ensure_folder(webdav_path: str):
     log.info(f"Target folder ready: {webdav_path}")
 
 
-def move_file(db_path: str, target_folder: str, keep_parents: int = 0,
-              is_dir: bool = False) -> tuple[str, str]:
-    """Move one file or folder via WebDAV MOVE.
+def move_file(db_path: str, target_folder: str, keep_parents: int = 0) -> tuple[str, str]:
+    """Move one file via WebDAV MOVE.
 
-    For folders, moves the entire subtree in one operation.
     On name collision tries stem_2, stem_3 … stem_99 before giving up.
 
     Returns (status, dest_relative_path) where dest_relative_path is
@@ -161,8 +157,7 @@ def move_file(db_path: str, target_folder: str, keep_parents: int = 0,
 
         if r.status_code in (201, 204):
             status = 'moved' if counter == 1 else 'renamed'
-            kind   = 'folder' if is_dir else 'file'
-            log.info(f"✓ {status.upper()} ({kind}): {filename} → {rel_dest}")
+            log.info(f"✓ {status.upper()}: {filename} → {rel_dest}")
             return status, rel_dest
         elif r.status_code == 412:   # destination exists, try next suffix
             continue
@@ -185,7 +180,8 @@ def propagate_folder_tags(tag_name: str) -> dict:
     before moving.
 
     Only regular files are tagged (sub-folders are left unchanged).
-    Already-tagged files are silently skipped — the operation is idempotent.
+    Files that already carry ANY tag are silently skipped — this prevents
+    double-tagging files that were individually tagged for a different purpose.
 
     Returns {'folders_processed': N, 'files_tagged': N}
     """
@@ -204,7 +200,7 @@ def propagate_folder_tags(tag_name: str) -> dict:
 
     # ── Find all tagged folders ────────────────────────────────────────────────
     cur.execute("""
-        SELECT fc.fileid, fc.path
+        SELECT DISTINCT fc.fileid, fc.path
         FROM oc_filecache fc
         JOIN oc_systemtag_object_mapping m ON m.objectid = fc.fileid::text
         JOIN oc_systemtag t               ON t.id = m.systemtagid
@@ -226,6 +222,7 @@ def propagate_folder_tags(tag_name: str) -> dict:
     log.info(f"Found {len(folders)} tagged folder(s) — propagating tag to files inside…")
     folders_processed = 0
     files_tagged      = 0
+    tagged_in_this_run: set[int] = set()   # guard against nested/overlapping folders
 
     for folder_id, folder_path in folders:
         folders_processed += 1
@@ -239,12 +236,12 @@ def propagate_folder_tags(tag_name: str) -> dict:
               AND fc.path NOT LIKE 'appdata_%%'
               AND NOT EXISTS (
                   SELECT 1 FROM oc_systemtag_object_mapping m2
-                  WHERE m2.objectid  = fc.fileid::text
-                    AND m2.systemtagid = %s
-                    AND m2.objecttype  = 'files'
+                  WHERE m2.objectid = fc.fileid::text
+                    AND m2.objecttype = 'files'
               )
-        """, (folder_path + '/%', tag_id))
-        untagged = cur.fetchall()
+        """, (folder_path + '/%',))
+        untagged = [(fid, fpath) for fid, fpath in cur.fetchall()
+                    if fid not in tagged_in_this_run]
 
         log.info(f"  {folder_path}: {len(untagged)} untagged file(s)")
         for file_id, file_path in untagged:
@@ -253,6 +250,7 @@ def propagate_folder_tags(tag_name: str) -> dict:
                 VALUES (%s, %s, 'files')
                 ON CONFLICT DO NOTHING
             """, (tag_id, str(file_id)))
+            tagged_in_this_run.add(file_id)
             files_tagged += 1
 
         if untagged:
@@ -299,43 +297,26 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
 
     items = get_tagged_items(tag)
     if not items:
-        log.info("No tagged files or folders found. Tag some photos first in Nextcloud.")
+        log.info("No tagged files found. Tag some photos first in Nextcloud (run --propagate if needed).")
         return
 
     total_size = sum(i['size'] for i in items)
-    n_dirs  = sum(1 for i in items if i['is_dir'])
-    n_files = len(items) - n_dirs
-    log.info(f"Total to process: {n_files} files, {n_dirs} folders, {format_bytes(total_size)}")
+    log.info(f"Total to process: {len(items)} files, {format_bytes(total_size)}")
 
     if dry_run:
-        log.info(f"DRY RUN — items that would be moved (keep_parents={keep_parents}):")
+        log.info(f"DRY RUN — files that would be moved (keep_parents={keep_parents}):")
         for item in items:
             subfolder, name = _dest_subpath(item['path'], keep_parents)
             dest = f"{subfolder}/{name}" if subfolder else name
-            kind = '[DIR] ' if item['is_dir'] else '[FILE]'
-            log.info(f"  {kind} [{format_bytes(item['size']):>10}]  {item['path']} → {dest}")
+            log.info(f"  [FILE] [{format_bytes(item['size']):>10}]  {item['path']} → {dest}")
         return
 
     ensure_folder(target_folder)
 
-    # Folders first (sort by path depth so parents move before children),
-    # then files. Within each group, alphabetical order.
-    dirs  = sorted([i for i in items if     i['is_dir']], key=lambda x: (x['path'].count('/'), x['path']))
-    files = sorted([i for i in items if not i['is_dir']], key=lambda x:  x['path'])
-
-    seen_folders: set[str]   = {target_folder}  # avoid redundant MKCOL
-    moved_dir_paths: set[str] = set()            # track moved folder source paths
-
+    seen_folders: set[str] = {target_folder}  # avoid redundant MKCOL
     moved, renamed, skipped, failed = [], [], [], []
 
-    for item in dirs + files:
-        # If a tagged parent folder was already moved, its children are already
-        # at the destination — skip without an HTTP request.
-        if any(item['path'].startswith(d + '/') for d in moved_dir_paths):
-            log.info(f"✓ COVERED: {item['path']} (inside an already-moved folder)")
-            skipped.append({**item, 'dest': '(covered by parent folder)'})
-            continue
-
+    for item in sorted(items, key=lambda x: x['path']):
         # Ensure the destination parent folder exists (cached to avoid redundant MKCOL)
         subfolder, _ = _dest_subpath(item['path'], keep_parents)
         dst_parent   = f"{target_folder}/{subfolder}" if subfolder else target_folder
@@ -343,20 +324,14 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
             ensure_folder(dst_parent)
             seen_folders.add(dst_parent)
 
-        status, dest_name = move_file(item['path'], target_folder, keep_parents, item['is_dir'])
+        status, dest_name = move_file(item['path'], target_folder, keep_parents)
         entry = {**item, 'dest': dest_name}
         if status == 'moved':
             moved.append(entry)
-            if item['is_dir']:
-                moved_dir_paths.add(item['path'])
         elif status == 'renamed':
             renamed.append(entry)
-            if item['is_dir']:
-                moved_dir_paths.add(item['path'])
         elif status == 'skipped':
             skipped.append(entry)
-            if item['is_dir']:
-                moved_dir_paths.add(item['path'])  # already in place
         else:
             failed.append(entry)
 
@@ -364,24 +339,18 @@ def main(tag: str, folder: str, dry_run: bool = False, keep_parents: int = 0):
     skipped_size = sum(e['size'] for e in skipped)
     failed_size  = sum(e['size'] for e in failed)
 
-    def _c(lst, is_dir): return sum(1 for e in lst if e.get('is_dir') == is_dir)
-
     report = {
         'timestamp':     run_ts.isoformat(),
         'tag':           tag,
         'target_folder': target_folder,
         'keep_parents':  keep_parents,
         'summary': {
-            'files_total':     n_files,
-            'folders_total':   n_dirs,
+            'files_total':     len(items),
             'size_total':      total_size,
             'size_total_hr':   format_bytes(total_size),
-            'files_moved':     _c(moved, False),
-            'folders_moved':   _c(moved, True),
-            'files_skipped':   _c(skipped, False),
-            'folders_skipped': _c(skipped, True),
-            'files_failed':    _c(failed, False),
-            'folders_failed':  _c(failed, True),
+            'files_moved':     len(moved),
+            'files_skipped':   len(skipped),
+            'files_failed':    len(failed),
             'size_moved':      moved_size,
             'size_moved_hr':   format_bytes(moved_size),
             'size_skipped':    skipped_size,

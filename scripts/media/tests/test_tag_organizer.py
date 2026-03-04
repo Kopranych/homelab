@@ -66,10 +66,10 @@ class TestFormatBytes:
 
 class TestGetTaggedItems:
 
-    def test_should_return_files_with_is_dir_false(self):
+    def test_should_return_files(self):
         rows = [
-            ('Photos/Wedding/IMG_001.JPG', 1_048_576, False),
-            ('Photos/Anna/IMG_002.JPG',   2_097_152, False),
+            ('Photos/Wedding/IMG_001.JPG', 1_048_576),
+            ('Photos/Anna/IMG_002.JPG',   2_097_152),
         ]
         mock_connect, _ = _db_mock(rows)
 
@@ -77,17 +77,8 @@ class TestGetTaggedItems:
             result = tag_organizer.get_tagged_items('wedding')
 
         assert len(result) == 2
-        assert result[0] == {'path': 'Photos/Wedding/IMG_001.JPG', 'size': 1_048_576, 'is_dir': False}
-        assert result[1] == {'path': 'Photos/Anna/IMG_002.JPG',   'size': 2_097_152, 'is_dir': False}
-
-    def test_should_return_folders_with_is_dir_true(self):
-        rows = [('Photos/Свадьба', 4096, True)]
-        mock_connect, _ = _db_mock(rows)
-
-        with patch('tag_organizer.psycopg2.connect', mock_connect):
-            result = tag_organizer.get_tagged_items('wedding')
-
-        assert result[0] == {'path': 'Photos/Свадьба', 'size': 4096, 'is_dir': True}
+        assert result[0] == {'path': 'Photos/Wedding/IMG_001.JPG', 'size': 1_048_576}
+        assert result[1] == {'path': 'Photos/Anna/IMG_002.JPG',   'size': 2_097_152}
 
     def test_should_return_empty_list_when_tag_has_no_matches(self):
         mock_connect, _ = _db_mock([])
@@ -98,7 +89,7 @@ class TestGetTaggedItems:
         assert result == []
 
     def test_should_use_zero_size_when_db_returns_none(self):
-        mock_connect, _ = _db_mock([('Photos/file.JPG', None, False)])
+        mock_connect, _ = _db_mock([('Photos/file.JPG', None)])
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
             result = tag_organizer.get_tagged_items('wedding')
@@ -436,8 +427,8 @@ class TestMoveFileWithParents:
 class TestMain:
 
     _FILES = [
-        {'path': 'Photos/iPhone_Anna/IMG_001.JPG', 'size': 1_000_000, 'is_dir': False},
-        {'path': 'Photos/iPhone_Ilya/DSC_001.JPG', 'size': 2_000_000, 'is_dir': False},
+        {'path': 'Photos/iPhone_Anna/IMG_001.JPG', 'size': 1_000_000},
+        {'path': 'Photos/iPhone_Ilya/DSC_001.JPG', 'size': 2_000_000},
     ]
 
     def test_should_not_call_ensure_folder_when_no_tagged_items(self):
@@ -580,9 +571,9 @@ class TestMain:
 
     def test_should_deduplicate_ensure_folder_calls_for_same_parent(self, tmp_path):
         files = [
-            {'path': 'Photos/iPhone/202207__/img1.jpg', 'size': 1000, 'is_dir': False},
-            {'path': 'Photos/Android/202208__/img2.jpg', 'size': 2000, 'is_dir': False},
-            {'path': 'Photos/iPhone/202207__/img3.jpg', 'size': 1000, 'is_dir': False},
+            {'path': 'Photos/iPhone/202207__/img1.jpg', 'size': 1000},
+            {'path': 'Photos/Android/202208__/img2.jpg', 'size': 2000},
+            {'path': 'Photos/iPhone/202207__/img3.jpg', 'size': 1000},
         ]
         with patch('tag_organizer.get_tagged_items', return_value=files), \
              patch('tag_organizer.ensure_folder') as mock_folder, \
@@ -605,61 +596,6 @@ class TestMain:
 
         for c in mock_move.call_args_list:
             assert c[0][2] == 2  # third positional arg is keep_parents
-
-    def test_should_move_folder_before_its_files(self, tmp_path):
-        # Tagged folder + tagged files inside it — folder should be processed first
-        items = [
-            {'path': 'Photos/Свадьба',               'size': 4096,      'is_dir': True},
-            {'path': 'Photos/Свадьба/IMG_001.JPG',   'size': 1_000_000, 'is_dir': False},
-            {'path': 'Photos/Свадьба/video.MTS',     'size': 2_000_000, 'is_dir': False},
-        ]
-        call_order = []
-        def record_move(path, *args, **kwargs):
-            call_order.append(path)
-            return ('moved', path.split('/')[-1])
-
-        with patch('tag_organizer.get_tagged_items', return_value=items), \
-             patch('tag_organizer.ensure_folder'), \
-             patch('tag_organizer.move_file', side_effect=record_move), \
-             patch('tag_organizer.LOG_DIR', str(tmp_path)):
-            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
-
-        assert call_order[0] == 'Photos/Свадьба'  # folder first
-
-    def test_should_skip_files_covered_by_moved_parent_folder(self, tmp_path):
-        items = [
-            {'path': 'Photos/Свадьба',               'size': 4096,      'is_dir': True},
-            {'path': 'Photos/Свадьба/IMG_001.JPG',   'size': 1_000_000, 'is_dir': False},
-        ]
-        with patch('tag_organizer.get_tagged_items', return_value=items), \
-             patch('tag_organizer.ensure_folder'), \
-             patch('tag_organizer.move_file', return_value=('moved', 'Свадьба')), \
-             patch('tag_organizer.LOG_DIR', str(tmp_path)):
-            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
-
-        report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
-        # Only the folder is moved; the file inside is automatically covered
-        assert report['summary']['folders_moved'] == 1
-        assert report['summary']['files_moved']   == 0
-        assert report['summary']['files_skipped'] == 1
-
-    def test_should_count_folders_in_report_summary(self, tmp_path):
-        items = [
-            {'path': 'Photos/Свадьба', 'size': 4096,      'is_dir': True},
-            {'path': 'Photos/img.jpg', 'size': 1_000_000, 'is_dir': False},
-        ]
-        move_results = [('moved', 'Свадьба'), ('moved', 'img.jpg')]
-        with patch('tag_organizer.get_tagged_items', return_value=items), \
-             patch('tag_organizer.ensure_folder'), \
-             patch('tag_organizer.move_file', side_effect=move_results), \
-             patch('tag_organizer.LOG_DIR', str(tmp_path)):
-            tag_organizer.main(tag='wedding', folder='Photos/Wedding')
-
-        report = json.loads(list(tmp_path.glob('tag_move_*.json'))[0].read_text())
-        assert report['summary']['folders_total'] == 1
-        assert report['summary']['files_total']   == 1
-        assert report['summary']['folders_moved'] == 1
-        assert report['summary']['files_moved']   == 1
 
 
 # ── propagate_folder_tags ─────────────────────────────────────────────────────
@@ -721,18 +657,33 @@ class TestPropagateFolderTags:
         assert result == {'folders_processed': 1, 'files_tagged': 2}
         conn.commit.assert_called_once()
 
-    def test_should_be_idempotent_when_all_files_already_tagged(self):
+    def test_should_skip_files_that_already_have_any_tag(self):
+        # DB query returns empty list — files already carry some tag (any tag),
+        # so NOT EXISTS filters them out at the SQL level.
         folders = [(10, 'Photos/Свадьба')]
-        untagged = []  # query returns nothing → all already tagged
+        untagged = []  # query returns nothing → files already tagged
         mock_connect, cur, conn = self._db_for_propagate(42, folders, [untagged])
 
         with patch('tag_organizer.psycopg2.connect', mock_connect):
             result = tag_organizer.propagate_folder_tags('wedding')
 
         assert result == {'folders_processed': 1, 'files_tagged': 0}
-        # No INSERT calls
         insert_calls = [c for c in cur.execute.call_args_list
                         if 'INSERT' in str(c)]
+        assert len(insert_calls) == 0
+
+    def test_should_not_tag_file_that_has_different_tag(self):
+        # file_id=101 already has tag A; DB NOT EXISTS returns it as absent
+        # from untagged list (empty), so propagation skips it.
+        folders = [(10, 'Photos/Wedding')]
+        untagged = []  # file already has tag A → filtered by NOT EXISTS
+        mock_connect, cur, conn = self._db_for_propagate(42, folders, [untagged])
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('wedding')
+
+        assert result['files_tagged'] == 0
+        insert_calls = [c for c in cur.execute.call_args_list if 'INSERT' in str(c)]
         assert len(insert_calls) == 0
 
     def test_should_process_multiple_folders(self):
@@ -745,6 +696,23 @@ class TestPropagateFolderTags:
             result = tag_organizer.propagate_folder_tags('vacation')
 
         assert result == {'folders_processed': 2, 'files_tagged': 3}
+
+    def test_should_not_double_tag_file_covered_by_two_tagged_folders(self):
+        # Parent folder AND child subfolder are both tagged.
+        # file_id=101 appears in BOTH untagged result sets (simulating a DB
+        # NOT EXISTS that hasn't committed yet, or duplicate folder entries).
+        folders = [(10, 'Photos/Wedding'), (11, 'Photos/Wedding/Sub')]
+        files1 = [(101, 'Photos/Wedding/Sub/img.jpg')]   # found under parent
+        files2 = [(101, 'Photos/Wedding/Sub/img.jpg')]   # same file under child
+        mock_connect, cur, conn = self._db_for_propagate(42, folders, [files1, files2])
+
+        with patch('tag_organizer.psycopg2.connect', mock_connect):
+            result = tag_organizer.propagate_folder_tags('wedding')
+
+        # File should only be tagged once despite appearing twice
+        assert result == {'folders_processed': 2, 'files_tagged': 1}
+        insert_calls = [c for c in cur.execute.call_args_list if 'INSERT' in str(c)]
+        assert len(insert_calls) == 1
 
     def test_should_insert_with_correct_tag_id_and_file_id(self):
         folders = [(10, 'Photos/Folder')]
