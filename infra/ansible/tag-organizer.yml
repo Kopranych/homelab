@@ -1,0 +1,204 @@
+---
+# Tag-based Photo Organizer — move Nextcloud-tagged photos to a dedicated folder
+#
+# Prerequisites:
+#   - photo-consolidation.yml --tags phase1 must have run at least once
+#     (deploys Python venv + scripts to /opt/photo-consolidator/)
+#   - Photos tagged in Nextcloud UI
+#   - Credentials set in config.local.yml (gitignored):
+#       nextcloud:
+#         password: "your-nextcloud-password"
+#         db:
+#           password: "your-postgres-password"
+#
+# Usage:
+#   # Dry run — list files that would be moved
+#   ansible-playbook -i inventory/homelab tag-organizer.yml \
+#     -e "tag=wedding folder='Photos/Wedding' dry_run=true"
+#
+#   # Full run
+#   ansible-playbook -i inventory/homelab tag-organizer.yml \
+#     -e "tag=wedding folder='Photos/Wedding'"
+#
+#   # Another grouping
+#   ansible-playbook -i inventory/homelab tag-organizer.yml \
+#     -e "tag=vacation_2021 folder='Photos/Vacation2021'"
+
+- name: Tag-based Photo Organizer
+  hosts: homelab
+  gather_facts: no
+
+  vars:
+    # Load config.yml; merge config.local.yml on top if it exists (local wins)
+    _base_config: "{{ lookup('file', playbook_dir + '/../../config.yml') | from_yaml }}"
+    _local_raw: "{{ lookup('file', playbook_dir + '/../../config.local.yml', errors='ignore') or '{}' }}"
+    homelab_config: "{{ _base_config | combine(_local_raw | from_yaml, recursive=True) }}"
+    nc_config: "{{ homelab_config.nextcloud }}"
+
+    # Python deploy (must match photo-consolidation.yml)
+    python_deploy_dir: "/opt/photo-consolidator"
+    python_bin: "{{ python_deploy_dir }}/venv/bin/python"
+    script_path: "{{ python_deploy_dir }}/tag_organizer.py"
+    log_dir: "{{ nc_config.log_dir | default('/data/logs') }}"
+
+    # Required — must be passed via -e
+    tag: ""       # e.g. wedding
+    folder: ""    # e.g. Photos/Wedding  (not required when propagate_only=true)
+
+    # Optional
+    dry_run: false
+    keep_parents: 0      # 0=flat, 1=keep one parent folder, 2=keep two parent folders
+    propagate_only: false  # true = only propagate tag to files inside tagged folders (no move)
+
+  pre_tasks:
+    - name: Validate required variables
+      fail:
+        msg: |
+          Missing required variables. Run with:
+            -e "tag=wedding folder='Photos/Wedding'"
+          For propagate-only (tag files inside tagged folders without moving):
+            -e "tag=wedding propagate_only=true"
+      when: tag == '' or (folder == '' and not (propagate_only | bool))
+
+    - name: Validate credentials are set
+      fail:
+        msg: |
+          Nextcloud and/or DB password is not set.
+          Add to config.local.yml (gitignored):
+            nextcloud:
+              password: "your-nextcloud-password"
+              db:
+                password: "your-postgres-password"
+      when: >
+        (nc_config.password | default('')) == '' or
+        (nc_config.db.password | default('')) == ''
+
+  tasks:
+    # ── Verify deployment ─────────────────────────────────────────────────────
+    - name: "Verify tag_organizer.py is deployed"
+      stat:
+        path: "{{ script_path }}"
+      register: script_stat
+
+    - name: Fail if script is not deployed
+      fail:
+        msg: >
+          {{ script_path }} not found.
+          Run photo-consolidation.yml --tags phase1 first to deploy scripts.
+      when: not script_stat.stat.exists
+
+    - name: "Verify Python venv exists"
+      stat:
+        path: "{{ python_bin }}"
+      register: venv_stat
+
+    - name: Fail if venv is missing
+      fail:
+        msg: >
+          Python venv not found at {{ python_bin }}.
+          Run photo-consolidation.yml --tags phase1 first.
+      when: not venv_stat.stat.exists
+
+    # ── Inject credentials ────────────────────────────────────────────────────
+    - name: "Set NC_URL in script"
+      lineinfile:
+        path: "{{ script_path }}"
+        regexp: "^NC_URL\\s*="
+        line: "NC_URL       = '{{ nc_config.url }}'"
+
+    - name: "Set NC_USER in script"
+      lineinfile:
+        path: "{{ script_path }}"
+        regexp: "^NC_USER\\s*="
+        line: "NC_USER      = '{{ nc_config.user }}'"
+
+    - name: "Set NC_PASS in script"
+      lineinfile:
+        path: "{{ script_path }}"
+        regexp: "^NC_PASS\\s*="
+        line: "NC_PASS      = '{{ nc_config.password }}'"
+
+    - name: "Set DB host in script"
+      lineinfile:
+        path: "{{ script_path }}"
+        regexp: "'host':\\s*'.*'"
+        line: "    'host':     '{{ nc_config.db.host | default('localhost') }}',"
+
+    - name: "Set DB password in script"
+      lineinfile:
+        path: "{{ script_path }}"
+        regexp: "'password':\\s*'.*'.*# get with"
+        line: "    'password': '{{ nc_config.db.password }}',   # get with: docker exec postgres-nextcloud env | grep POSTGRES_PASSWORD"
+
+    - name: "Set LOG_DIR in script"
+      lineinfile:
+        path: "{{ script_path }}"
+        regexp: "^LOG_DIR\\s*="
+        line: "LOG_DIR      = '{{ log_dir }}'"
+
+    # ── Ensure log directory exists ───────────────────────────────────────────
+    - name: "Ensure log directory exists"
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+      become: yes
+
+    # ── Run the organizer ─────────────────────────────────────────────────────
+    - name: "Running tag organizer (propagate_only={{ propagate_only }}, dry_run={{ dry_run }}, keep_parents={{ keep_parents }})..."
+      command: >
+        {{ python_bin }} {{ script_path }}
+        --tag {{ tag }}
+        {% if propagate_only | bool %}
+        --propagate
+        {% else %}
+        --folder {{ folder }}
+        {% if keep_parents | int > 0 %}--keep-parents {{ keep_parents }}{% endif %}
+        {{ '--dry-run' if (dry_run | bool) else '' }}
+        {% endif %}
+      register: organizer_result
+      async: 3600   # 1 hour — large collections take time
+      poll: 15
+
+    - name: "Script output"
+      debug:
+        msg: "{{ organizer_result.stdout_lines | default([]) + organizer_result.stderr_lines | default([]) }}"
+
+    # ── Show JSON report (skip for dry-run and propagate-only) ───────────────
+    - name: "Find latest report"
+      shell: "ls -t {{ log_dir }}/tag_move_{{ tag }}_*.json 2>/dev/null | head -1"
+      register: latest_report
+      changed_when: false
+      when: not (dry_run | bool) and not (propagate_only | bool)
+
+    - name: "Read report"
+      command: "cat {{ latest_report.stdout }}"
+      register: report_content
+      changed_when: false
+      when:
+        - not (dry_run | bool)
+        - not (propagate_only | bool)
+        - latest_report.stdout != ''
+
+    - name: "Results summary"
+      debug:
+        msg: "{{ report_content.stdout | from_json | json_query('summary') }}"
+      when:
+        - not (dry_run | bool)
+        - not (propagate_only | bool)
+        - report_content is defined
+        - report_content.stdout is defined
+
+    - name: "Done"
+      debug:
+        msg: >-
+          {% if propagate_only | bool %}
+          Propagation complete. Open Nextcloud → Files → Tags → {{ tag }} to verify
+          individual files appear. Then re-run without propagate_only=true to move them.
+          Log: {{ log_dir }}/tag_propagate_{{ tag }}_*.log
+          {% elif dry_run | bool %}
+          Dry run complete. Re-run without dry_run=true to move files.
+          {% else %}
+          Files moved to: Consolidated/{{ folder }}
+          Report: {{ latest_report.stdout | default('N/A') }}
+          {% endif %}

@@ -21,6 +21,8 @@ services:
     image: {{ nextcloud.images.postgres }}
     container_name: postgres-nextcloud
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"   # host-only — needed by tag_organizer.py running on the host
     volumes:
       - {{ nextcloud.data_root }}/db:/var/lib/postgresql/data
     environment:
@@ -72,6 +74,7 @@ services:
       # Only mount config and data directories (NOT /var/www/html)
       - {{ nextcloud.data_root }}/config:/var/www/html/config
       - {{ nextcloud.data_root }}/data:/var/www/html/data
+      - {{ nextcloud.photo_consolidation }}/final:/data/photo-consolidation/final
     environment:
       # Database configuration
       - POSTGRES_DB={{ nextcloud.database.name }}

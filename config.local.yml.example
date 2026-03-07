@@ -56,6 +56,12 @@ network:
 # Override credentials (use Ansible Vault for production)
 secrets:
   grafana_admin_password: "change-me-please"
+
+# Nextcloud credentials — required by tag-organizer.yml playbook
+nextcloud:
+  password: "your-nextcloud-user-password"
+  db:
+    password: "your-postgres-nextcloud-password"  # docker exec postgres-nextcloud env | grep POSTGRES_PASSWORD
   
 # Local development overrides
 development:

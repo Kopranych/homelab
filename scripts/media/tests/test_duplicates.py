@@ -13,6 +13,13 @@ from photo_consolidator.duplicates import DuplicateDetector, DuplicateGroup, Fil
 class TestQualityScoring:
     """Test quality score calculation."""
 
+    @pytest.fixture(autouse=True)
+    def no_corrupt_check(self):
+        """Patch out corruption check so unit tests focus on format/folder scoring."""
+        with patch('photo_consolidator.duplicates.DuplicateDetector._is_corrupt_image',
+                   return_value=False):
+            yield
+
     def _make_detector(self, sample_config):
         return DuplicateDetector(sample_config)
 
