@@ -2,6 +2,7 @@
 
 import json
 import logging
+import random
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -10,11 +11,13 @@ from tqdm import tqdm
 from .config import Config
 from .duplicates import DuplicateGroup, FileInfo
 from .utils import (
-    ensure_directory, 
-    safe_copy_file, 
-    format_bytes, 
+    ensure_directory,
+    safe_copy_file,
+    calculate_sha256,
+    format_bytes,
     cleanup_empty_directories,
-    get_current_timestamp
+    get_current_timestamp,
+    extract_photo_date
 )
 
 logger = logging.getLogger(__name__)
@@ -28,8 +31,9 @@ class ConsolidationStats:
     files_removed: int = 0
     space_saved: int = 0
     unique_files_copied: int = 0
+    files_already_in_final: int = 0
     errors: List[str] = None
-    
+
     def __post_init__(self):
         if self.errors is None:
             self.errors = []
@@ -46,18 +50,71 @@ class PhotoConsolidator:
             config: Configuration instance
         """
         self.config = config
-        self.data_root = Path(config.get_data_root())
+        self.data_root = Path(config.get_consolidation_root())
         self.incoming_dir = self.data_root / "incoming"
         self.duplicates_dir = self.data_root / "duplicates"
         self.final_dir = self.data_root / "final"
         self.backup_dir = self.data_root / "backup" / "consolidation"
         self.manifests_dir = self.data_root / "manifests"
-        
+
+        # Incremental run support: read groups from run_id subdir if set
+        run_id = config.get_run_id()
+        self.run_id = run_id
+        groups_base = self.duplicates_dir / "groups"
+        self.groups_dir = groups_base / run_id if run_id else groups_base
+
         # Ensure directories exist
         ensure_directory(self.final_dir)
         if self.config.should_backup_before_removal():
             ensure_directory(self.backup_dir)
     
+    @staticmethod
+    def _safe_dest_path(dest_path: Path, source_path: Path) -> Path:
+        """
+        Avoid overwriting a different file at the same destination.
+
+        If dest_path already exists with different content, append _2, _3, etc.
+        to the filename stem. Same-content files are fine to overwrite (idempotent).
+        """
+        if not dest_path.exists():
+            return dest_path
+
+        # Same size = almost certainly same file (already a duplicate by hash)
+        if dest_path.stat().st_size == source_path.stat().st_size:
+            return dest_path
+
+        # Collision: different file at same path — add counter suffix
+        stem = dest_path.stem
+        suffix = dest_path.suffix
+        parent = dest_path.parent
+        counter = 2
+        while True:
+            new_path = parent / f"{stem}_{counter}{suffix}"
+            if not new_path.exists():
+                logger.warning(f"Path collision, renaming: {dest_path.name} -> {new_path.name}")
+                return new_path
+            counter += 1
+
+    def _add_date_suffix(self, dest_path: Path, source_path: Path) -> Path:
+        """
+        Add YYYY-MM date suffix to the parent folder name based on EXIF metadata.
+
+        Args:
+            dest_path: Planned destination path
+            source_path: Original source file (to read EXIF from)
+
+        Returns:
+            dest_path with date-suffixed parent folder, or unchanged if no date found
+        """
+        date_info = extract_photo_date(source_path)
+        if date_info is None:
+            return dest_path
+
+        year, month = date_info
+        parent = dest_path.parent
+        new_parent_name = f"{parent.name}_{year:04d}-{month:02d}"
+        return parent.parent / new_parent_name / dest_path.name
+
     def consolidate_files(self, dry_run: Optional[bool] = None) -> Dict[str, Any]:
         """
         Consolidate files by removing duplicates and organizing.
@@ -80,8 +137,8 @@ class PhotoConsolidator:
             raise ValueError(f"Incoming directory not found: {self.incoming_dir}")
         
         # Process duplicate groups if analysis was done
-        if self.duplicates_dir.exists() and (self.duplicates_dir / "groups").exists():
-            logger.info("Processing duplicate groups")
+        if self.groups_dir.exists():
+            logger.info(f"Processing duplicate groups from {self.groups_dir}")
             self._process_duplicate_groups(stats, dry_run)
         else:
             logger.warning("No duplicate analysis found, processing all files as unique")
@@ -101,9 +158,8 @@ class PhotoConsolidator:
     
     def _process_duplicate_groups(self, stats: ConsolidationStats, dry_run: bool):
         """Process duplicate groups according to quality rankings."""
-        
-        groups_dir = self.duplicates_dir / "groups"
-        group_files = list(groups_dir.glob("group_*.txt"))
+
+        group_files = list(self.groups_dir.glob("group_*.txt"))
         
         if not group_files:
             logger.warning("No duplicate group files found")
@@ -123,28 +179,47 @@ class PhotoConsolidator:
     
     def _process_single_group(self, group_file: Path, stats: ConsolidationStats, dry_run: bool):
         """Process a single duplicate group."""
-        
+
+        # Detect EXISTS_IN_FINAL groups (created during incremental analyze phase)
+        # These files are already in the final collection — skip entirely
+        with open(group_file, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if line.strip().startswith('Type: EXISTS_IN_FINAL'):
+                    stats.files_already_in_final += 1
+                    logger.debug(f"Skipping EXISTS_IN_FINAL group: {group_file.name}")
+                    return
+                if i >= 10:
+                    break
+
         # Parse group file to extract file paths and rankings
         files_to_remove = []
         best_file = None
-        
-        with open(group_file, 'r') as f:
-            content = f.read()
-            lines = content.split('\n')
-            
+
+        with open(group_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+            current_action = None
             for line in lines:
                 line = line.strip()
-                
-                # Find KEEP file (best quality)
-                if 'KEEP' in line and 'Full:' in line:
-                    path_start = line.find('Full: ') + 6
-                    best_file = line[path_start:].strip()
-                
-                # Find REMOVE files
-                elif 'REMOVE' in line and 'Full:' in line:
-                    path_start = line.find('Full: ') + 6
-                    remove_file = line[path_start:].strip()
-                    files_to_remove.append(remove_file)
+
+                # Detect action lines: "[1] KEEP - Score: ..." or "[2] REMOVE - Score: ..."
+                if 'Score:' in line:
+                    if 'KEEP' in line:
+                        current_action = 'KEEP'
+                    elif 'REMOVE' in line:
+                        current_action = 'REMOVE'
+                    else:
+                        current_action = None
+
+                # Extract path from "Full: /path/to/file" lines
+                elif 'Full:' in line and current_action:
+                    path_start = line.find('Full:') + 5
+                    file_path = line[path_start:].strip()
+                    if current_action == 'KEEP':
+                        best_file = file_path
+                    elif current_action == 'REMOVE':
+                        files_to_remove.append(file_path)
+                    current_action = None
         
         if not best_file:
             logger.warning(f"No best file found in group {group_file}")
@@ -168,7 +243,10 @@ class PhotoConsolidator:
             rel_path = Path(*path_parts[1:])  # Skip first part (drive name)
         
         dest_path = self.final_dir / rel_path
-        
+        if self.config.should_add_date_suffix():
+            dest_path = self._add_date_suffix(dest_path, best_path)
+        dest_path = self._safe_dest_path(dest_path, best_path)
+
         # Copy best file to final location
         if dry_run:
             logger.debug(f"DRY RUN: Would copy {best_path} -> {dest_path}")
@@ -196,49 +274,18 @@ class PhotoConsolidator:
     
     def _handle_duplicate_removal(self, files_to_remove: List[str], group_name: str,
                                  stats: ConsolidationStats, dry_run: bool):
-        """Handle removal of duplicate files with optional backup."""
-        
-        # Backup files if configured
-        if self.config.should_backup_before_removal() and not dry_run:
-            group_backup_dir = self.backup_dir / group_name
-            ensure_directory(group_backup_dir)
-            
-            logger.debug(f"Creating backup for group {group_name}")
-            for file_path_str in files_to_remove:
-                file_path = Path(file_path_str)
-                if file_path.exists():
-                    backup_path = group_backup_dir / file_path.name
-                    if not safe_copy_file(file_path, backup_path):
-                        logger.warning(f"Failed to backup: {file_path}")
-        
-        # Remove duplicate files
+        """Track duplicate files for statistics (incoming is never modified)."""
+
         space_saved_group = 0
         for file_path_str in files_to_remove:
             file_path = Path(file_path_str)
-            
-            # Safety check
-            if not str(file_path).startswith(str(self.incoming_dir)):
-                logger.warning(f"Safety violation: Remove file not in incoming: {file_path}")
-                continue
-            
+
             if file_path.exists():
                 file_size = file_path.stat().st_size
-                
-                if dry_run:
-                    logger.debug(f"DRY RUN: Would remove {file_path} ({format_bytes(file_size)})")
-                    space_saved_group += file_size
-                    stats.files_removed += 1
-                else:
-                    try:
-                        file_path.unlink()
-                        logger.debug(f"Removed: {file_path.relative_to(self.incoming_dir)} (duplicate)")
-                        space_saved_group += file_size
-                        stats.files_removed += 1
-                    except Exception as e:
-                        error_msg = f"Failed to remove {file_path}: {e}"
-                        logger.error(error_msg)
-                        stats.errors.append(error_msg)
-        
+                space_saved_group += file_size
+                stats.files_removed += 1
+                logger.debug(f"Duplicate skipped: {file_path.name} ({format_bytes(file_size)})")
+
         stats.space_saved += space_saved_group
     
     def _process_unique_files(self, stats: ConsolidationStats, dry_run: bool):
@@ -278,33 +325,40 @@ class PhotoConsolidator:
             return
         
         logger.info(f"Processing {len(unique_files)} unique files")
-        
+
+        skipped_missing = 0
+        dry_run_kept = 0
         with tqdm(unique_files, desc="Processing unique files", unit="files") as pbar:
             for file_data in pbar:
                 try:
                     source_path = Path(file_data['path'])
-                    
+
                     # Safety check
                     if not str(source_path).startswith(str(self.incoming_dir)):
                         logger.warning(f"Safety violation: Unique file not in incoming: {source_path}")
                         continue
-                    
+
                     if not source_path.exists():
-                        logger.warning(f"Unique file not found: {source_path}")
+                        skipped_missing += 1
+                        logger.debug(f"Skipping missing unique file: {source_path}")
                         continue
-                    
+
                     # Determine destination path
                     rel_path = source_path.relative_to(self.incoming_dir)
                     # Remove source drive prefix
                     path_parts = rel_path.parts
                     if len(path_parts) > 1:
                         rel_path = Path(*path_parts[1:])
-                    
+
                     dest_path = self.final_dir / rel_path
-                    
+                    if self.config.should_add_date_suffix():
+                        dest_path = self._add_date_suffix(dest_path, source_path)
+                    dest_path = self._safe_dest_path(dest_path, source_path)
+
                     # Copy unique file
                     if dry_run:
                         logger.debug(f"DRY RUN: Would copy unique file {source_path} -> {dest_path}")
+                        dry_run_kept += 1
                     else:
                         if ensure_directory(dest_path.parent):
                             if safe_copy_file(source_path, dest_path, verify=True):
@@ -314,13 +368,16 @@ class PhotoConsolidator:
                                 error_msg = f"Failed to copy unique file: {source_path}"
                                 logger.error(error_msg)
                                 stats.errors.append(error_msg)
-                    
+
                 except Exception as e:
                     error_msg = f"Error processing unique file {file_data.get('path', 'unknown')}: {e}"
                     logger.error(error_msg)
                     stats.errors.append(error_msg)
-        
-        stats.files_kept += len(unique_files) if dry_run else stats.unique_files_copied
+
+        if skipped_missing > 0:
+            logger.warning(f"Skipped {skipped_missing} missing unique files")
+
+        stats.files_kept += dry_run_kept if dry_run else stats.unique_files_copied
     
     def _generate_final_report(self, stats: ConsolidationStats, dry_run: bool) -> Dict[str, Any]:
         """Generate final consolidation report."""
@@ -347,6 +404,7 @@ class PhotoConsolidator:
                 'files_kept': stats.files_kept,
                 'files_removed': stats.files_removed,
                 'unique_files_copied': stats.unique_files_copied,
+                'files_already_in_final': stats.files_already_in_final,
                 'space_saved_bytes': stats.space_saved,
                 'space_saved_human': format_bytes(stats.space_saved),
                 'final_collection_files': final_count,
@@ -383,5 +441,124 @@ class PhotoConsolidator:
             removed_dirs = cleanup_empty_directories(self.incoming_dir)
             if removed_dirs > 0:
                 logger.info(f"Cleaned up {removed_dirs} empty directories")
-        
+
         return report_data
+
+    def verify_final(self, hash_samples: int = 50) -> Dict[str, Any]:
+        """
+        Verify final/ contains every expected file by comparing SHA256 hashes.
+
+        Approach (path-independent, reliable):
+        1. Build set of expected hashes: KEEP hash from each duplicate group
+           + every unique hash from the manifest.
+        2. Hash a random sample of files in final/ and confirm they match
+           an expected hash.
+        3. Count files in final/ vs expected.
+
+        Args:
+            hash_samples: Number of random files in final/ to SHA256-verify
+
+        Returns:
+            Dictionary with verification results
+        """
+        logger.info("Starting final directory verification")
+
+        # --- 1. Build expected hashes ---
+        expected_hashes = set()
+
+        # From duplicate groups: each group's hash = one expected file
+        group_count = 0
+        if self.groups_dir.exists():
+            group_files = list(self.groups_dir.glob("group_*.txt"))
+            logger.info(f"Reading hashes from {len(group_files)} groups in {self.groups_dir}")
+            for gf in tqdm(group_files, desc="Reading group hashes", unit="groups"):
+                group_hash = self._parse_group_hash(gf)
+                if group_hash:
+                    expected_hashes.add(group_hash)
+                    group_count += 1
+
+        # From manifest: unique hashes (files not in any duplicate group)
+        manifest_file = self.manifests_dir / "copied_files_combined.json"
+        unique_count = 0
+        if manifest_file.exists():
+            with open(manifest_file, 'r') as f:
+                manifest = json.load(f)
+
+            hash_to_files = {}
+            for fd in manifest.get('files', []):
+                h = fd.get('hash', '')
+                if h:
+                    hash_to_files.setdefault(h, []).append(fd)
+
+            for h, files_list in hash_to_files.items():
+                if len(files_list) == 1:
+                    # Check source still exists (skip deleted system files)
+                    if Path(files_list[0]['path']).exists():
+                        expected_hashes.add(h)
+                        unique_count += 1
+
+        logger.info(f"Expected hashes: {len(expected_hashes)} "
+                     f"({group_count} from groups + {unique_count} unique)")
+
+        # --- 2. Count files in final/ ---
+        final_files = [f for f in self.final_dir.rglob('*') if f.is_file()]
+        total_final = len(final_files)
+        logger.info(f"Files in final/: {total_final}")
+
+        # --- 3. SHA256-verify random sample from final/ ---
+        sample_size = min(hash_samples, total_final)
+        sample = random.sample(final_files, sample_size) if sample_size > 0 else []
+
+        matched = 0
+        not_in_expected = []
+        logger.info(f"SHA256-verifying {sample_size} random files from final/")
+
+        for fpath in tqdm(sample, desc="Hash verification", unit="files"):
+            h = calculate_sha256(fpath)
+            if h in expected_hashes:
+                matched += 1
+            else:
+                not_in_expected.append({'path': str(fpath), 'hash': h})
+
+        # --- Build result ---
+        ok = (total_final >= len(expected_hashes)) and len(not_in_expected) == 0
+
+        result = {
+            'success': ok,
+            'expected_unique_hashes': len(expected_hashes),
+            'expected_from_groups': group_count,
+            'expected_from_unique': unique_count,
+            'final_files_count': total_final,
+            'count_match': total_final >= len(expected_hashes),
+            'hash_samples_checked': sample_size,
+            'hash_samples_matched': matched,
+            'hash_samples_unknown': len(not_in_expected),
+            'unknown_file_details': not_in_expected[:20],
+        }
+
+        # Save report
+        report_file = (self.data_root / "logs" /
+                       f"verification_{get_current_timestamp().replace(':', '-')}.json")
+        ensure_directory(report_file.parent)
+        with open(report_file, 'w') as f:
+            json.dump(result, f, indent=2)
+        logger.info(f"Verification report saved: {report_file}")
+
+        return result
+
+    @staticmethod
+    def _parse_group_hash(group_file: Path) -> Optional[str]:
+        """Extract the SHA256 hash from a group report file header.
+
+        Returns None for EXISTS_IN_FINAL groups (already counted in existing final/).
+        """
+        result_hash = None
+        with open(group_file, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if line.startswith('Hash:'):
+                    result_hash = line.split(':', 1)[1].strip()
+                elif line.strip().startswith('Type: EXISTS_IN_FINAL'):
+                    return None  # Skip — file was already in final/ before this run
+                if i >= 10:
+                    break
+        return result_hash

@@ -31,6 +31,9 @@ infrastructure:
   storage:
     # Main data directory
     data_root: "/data"
+
+    # Photo consolidation working directory
+    consolidation_root: "/data/photo-consolidation"
     
     # Partition layout
     partitions:
@@ -40,16 +43,26 @@ infrastructure:
       data: "/data"       # 911GB
       swap: "swap"        # 16GB
     
-    # Source drives for photo consolidation
+    # Source drives for photo consolidation (mounted read-only with ntfs-3g)
     source_drives:
+#      - path: "/media/multimedia"
+#        label: "Multimedia"
+#        device: "/dev/sdb3"
+#        uuid: "78BEC248BEC1FE9E"
+#        size: "293GB"
+#        filesystem: "ntfs"
+#        include_folders:  # top-level folders only; omit to copy everything
+#          - "Photos"
+#          - "$RECYCLE.BIN"
+#          - "Documents"
       - path: "/media/sdb1"
-        label: "old-ssd-1"
-        size: "512GB"
-        filesystem: "ntfs"  # Windows formatted
-      - path: "/media/sdc1"
-        label: "old-external-1"
-        size: "1TB"
-        filesystem: "ntfs"  # Windows formatted
+        label: "windows-main"
+        device: "/dev/sda3"
+        uuid: "D0EEF68DEEF66ADC"
+        size: "440GB"
+        filesystem: "ntfs"
+        include_folders:
+          - "Photos"
 
 # ====================
 # SERVICES & APPLICATIONS
@@ -121,13 +134,7 @@ services:
       port: 2283
       upload_location: "/data/photos/immich"
       database: "postgresql"
-    
-    # Photo consolidation settings
-    consolidation:
-      source_drives: "{{ infrastructure.storage.source_drives }}"
-      target_directory: "/data/photos/consolidated"
-      backup_directory: "/data/backup/photos"
-      
+
   # Development Environment
   development:
     # Java Development
@@ -167,10 +174,17 @@ services:
 # PHOTO CONSOLIDATION
 # ====================
 photo_consolidation:
+  # Incremental (top-up) mode — process new folders without re-running from scratch
+  # Set run_id and compare_final in config.local.yml before each incremental run
+  incremental:
+    run_id: "2026-03-02"        # e.g. "2026-03-02"; creates isolated report subdirs for this run
+    compare_final: "/data/photo-consolidation/final" # Absolute path to existing final/ to skip files already consolidated
+
   # Process Configuration
   process:
-    dry_run: true  # Always start with dry run
+    dry_run: false  # Always start with dry run
     preserve_structure: true
+    add_date_suffix: false  # Add YYYY-MM suffix to parent folder from EXIF date
     parallel_jobs: 4
     
   # Quality Analysis Settings

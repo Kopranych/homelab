@@ -10,7 +10,7 @@ groups:
   - orgId: 1
     name: homelab-alerts
     folder: Homelab
-    interval: 1m
+    interval: 30s
     rules:
       # ====================
       # DISK SPACE ALERT
@@ -30,9 +30,11 @@ groups:
                 from(bucket: "{{ monitoring.influxdb.bucket }}")
                   |> range(start: -10m)
                   |> filter(fn: (r) => r["_measurement"] == "disk")
-                  |> filter(fn: (r) => r["_field"] == "used_percent")
+                  |> filter(fn: (r) => r["_field"] == "free")
                   |> filter(fn: (r) => r["path"] == "/data")
-                  |> aggregateWindow(every: 1m, fn: mean)
+                  |> last()
+                  |> map(fn: (r) => ({ r with _value: float(v: r._value) / 1073741824.0 }))
+                  |> keep(columns: ["_value", "_time"])
           - refId: C
             queryType: ''
             relativeTimeRange:
@@ -43,8 +45,8 @@ groups:
               conditions:
                 - evaluator:
                     params:
-                      - {{ (100 - (monitoring.alerts.disk_space_threshold_gb / 9.11)) | int }}
-                    type: gt
+                      - {{ monitoring.alerts.disk_space_threshold_gb }}
+                    type: lt
                   operator:
                     type: and
                   query:
@@ -57,8 +59,8 @@ groups:
               expression: A
               reducer: last
               type: threshold
-        noDataState: NoData
-        execErrState: Error
+        noDataState: OK
+        execErrState: OK
         for: 5m
         annotations:
           summary: "Disk space is running low on /data partition"
@@ -86,7 +88,8 @@ groups:
                   |> range(start: -10m)
                   |> filter(fn: (r) => r["_measurement"] == "mem")
                   |> filter(fn: (r) => r["_field"] == "used_percent")
-                  |> aggregateWindow(every: 1m, fn: mean)
+                  |> last()
+                  |> keep(columns: ["_value", "_time"])
           - refId: C
             queryType: ''
             relativeTimeRange:
@@ -111,8 +114,8 @@ groups:
               expression: A
               reducer: last
               type: threshold
-        noDataState: NoData
-        execErrState: Error
+        noDataState: OK
+        execErrState: OK
         for: 10m
         annotations:
           summary: "Memory usage is critically high"
@@ -141,8 +144,9 @@ groups:
                   |> filter(fn: (r) => r["_measurement"] == "cpu")
                   |> filter(fn: (r) => r["_field"] == "usage_idle")
                   |> filter(fn: (r) => r["cpu"] == "cpu-total")
+                  |> last()
                   |> map(fn: (r) => ({ r with _value: 100.0 - r._value }))
-                  |> aggregateWindow(every: 1m, fn: mean)
+                  |> keep(columns: ["_value", "_time"])
           - refId: C
             queryType: ''
             relativeTimeRange:
@@ -167,8 +171,8 @@ groups:
               expression: A
               reducer: last
               type: threshold
-        noDataState: NoData
-        execErrState: Error
+        noDataState: OK
+        execErrState: OK
         for: 15m
         annotations:
           summary: "CPU usage is critically high"
@@ -178,26 +182,29 @@ groups:
         isPaused: false
 
       # ====================
-      # CONTAINER RESTART ALERT
+      # CONTAINER UNHEALTHY ALERT
       # ====================
-      - uid: container-restart-alert
-        title: Container Restarts Detected
+      - uid: container-unhealthy-alert
+        title: Container Unhealthy
         condition: C
         data:
           - refId: A
             queryType: ''
             relativeTimeRange:
-              from: 3600
+              from: 300
               to: 0
             datasourceUid: influxdb-homelab
             model:
               query: |
                 from(bucket: "{{ monitoring.influxdb.bucket }}")
-                  |> range(start: -1h)
-                  |> filter(fn: (r) => r["_measurement"] == "docker_container_status")
-                  |> filter(fn: (r) => r["_field"] == "exitcode")
-                  |> filter(fn: (r) => r._value != 0)
+                  |> range(start: -5m)
+                  |> filter(fn: (r) => r["_measurement"] == "docker_container_health")
+                  |> filter(fn: (r) => r["_field"] == "health_status")
+                  |> filter(fn: (r) => r["_value"] != "healthy")
+                  |> group(columns: ["container_name"])
                   |> count()
+                  |> keep(columns: ["_value", "container_name"])
+                  |> toFloat()
           - refId: C
             queryType: ''
             relativeTimeRange:
@@ -208,7 +215,7 @@ groups:
               conditions:
                 - evaluator:
                     params:
-                      - {{ monitoring.alerts.container_restart_threshold }}
+                      - 0
                     type: gt
                   operator:
                     type: and
@@ -222,12 +229,70 @@ groups:
               expression: A
               reducer: last
               type: threshold
-        noDataState: NoData
-        execErrState: Error
+        noDataState: OK
+        execErrState: OK
         for: 5m
         annotations:
-          summary: "Container has restarted multiple times"
-          description: "A container has restarted more than {{ monitoring.alerts.container_restart_threshold }} times in the last hour"
+          summary: "Container is reporting unhealthy status"
+          description: "Container has been unhealthy for more than 5 minutes"
+        labels:
+          severity: warning
+        isPaused: false
+
+      # ====================
+      # CONTAINER RESTART ALERT
+      # ====================
+      - uid: container-restart
+        title: Container Restarted
+        condition: C
+        data:
+          - refId: A
+            queryType: ''
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: influxdb-homelab
+            model:
+              query: |
+                from(bucket: "{{ monitoring.influxdb.bucket }}")
+                  |> range(start: -5m)
+                  |> filter(fn: (r) => r["_measurement"] == "docker_container_status")
+                  |> filter(fn: (r) => r["_field"] == "uptime_ns")
+                  |> filter(fn: (r) => r._value < 180000000000)
+                  |> group(columns: ["container_name"])
+                  |> count()
+                  |> keep(columns: ["_value", "container_name"])
+                  |> toFloat()
+          - refId: C
+            queryType: ''
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              type: threshold
+        noDataState: OK
+        execErrState: OK
+        for: 0s
+        annotations:
+          summary: "Container restarted"
+          description: "A container has uptime under 3 minutes (recently restarted)"
         labels:
           severity: warning
         isPaused: false

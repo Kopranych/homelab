@@ -15,7 +15,7 @@ class ConsolidationReporter:
     def __init__(self, config):
         """Initialize reporter with configuration."""
         self.config = config
-        self.data_root = Path(config.get_data_root())
+        self.data_root = Path(config.get_consolidation_root())
     
     def generate_summary_report(self, results: Dict[str, Any]) -> str:
         """

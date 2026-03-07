@@ -13,7 +13,7 @@ This is a homelab infrastructure project for setting up a mini PC home server. T
 - Automated Nextcloud deployment for photo verification
 - Centralized configuration management (YAML-based)
 - Ansible automation for infrastructure deployment
-- Python CLI and legacy bash scripts for photo processing
+- Python CLI for photo processing
 - Tailscale VPN for secure remote access
 
 ## Architecture Overview
@@ -60,9 +60,9 @@ See `CONFIG.md` for detailed configuration management documentation.
 
 ### Implementation Layers
 
-**Three implementation approaches** (choose based on needs):
+**Two implementation approaches** (choose based on needs):
 
-1. **Python CLI** (`scripts/media/consolidate.py`) - **Recommended**
+1. **Python CLI** (`scripts/media/consolidate.py`) - **For direct use**
    - Modern, robust, better error handling
    - Progress bars and colored output
    - Modular design with photo_consolidator package
@@ -70,14 +70,9 @@ See `CONFIG.md` for detailed configuration management documentation.
 
 2. **Ansible Playbooks** (`infra/ansible/`) - **For automation**
    - Full orchestration from laptop
-   - Complete workflow automation
+   - Calls the Python CLI under the hood
    - Environment management
    - Safety checks and rollback support
-
-3. **Bash Scripts** (`scripts/media/*.sh`) - **Legacy fallback**
-   - Simpler but less reliable
-   - Still functional for manual operations
-   - Being replaced by Python CLI
 
 ## Repository Structure
 
@@ -101,12 +96,11 @@ homelab/
 │   ├── common/
 │   │   └── config.sh              # Configuration loader for bash scripts
 │   ├── media/
-│   │   ├── consolidate.py         # Python CLI (RECOMMENDED)
+│   │   ├── consolidate.py         # Python CLI entry point
 │   │   ├── photo_consolidator/    # Python package
 │   │   ├── requirements.txt       # Python dependencies
-│   │   ├── copy_all_media.sh      # Legacy bash: copy phase
-│   │   ├── analyze_copied_files.sh # Legacy bash: analyze phase
-│   │   └── consolidate_copied_files.sh # Legacy bash: consolidate phase
+│   │   ├── pytest.ini             # Test configuration
+│   │   └── tests/                 # Unit tests
 │   └── setup/
 │       └── setup_nextcloud_verification.sh
 │
@@ -205,17 +199,6 @@ ENVIRONMENT=development ansible-playbook ...
 ENVIRONMENT=production ansible-playbook ...
 ```
 
-### Legacy Bash Scripts
-
-```bash
-# Individual phases (legacy approach)
-./scripts/media/copy_all_media.sh
-./scripts/media/analyze_copied_files.sh
-./scripts/media/consolidate_copied_files.sh
-
-# All support dry-run mode via config.yml
-```
-
 ## Development Workflow
 
 ### Working with Configuration
@@ -268,28 +251,6 @@ python3 consolidate.py workflow --log-level DEBUG
 
 # Test configuration loading
 python3 -c "from photo_consolidator import Config; c = Config(); print(c.config)"
-```
-
-### Working with Bash Scripts
-
-**Integration with centralized config**:
-```bash
-#!/usr/bin/env bash
-source "$(dirname "$0")/../common/config.sh"
-load_common_config
-
-# Now use variables from config.yml
-echo "Data root: $HOMELAB_DATA_ROOT"
-echo "Parallel jobs: $PHOTO_PARALLEL_JOBS"
-```
-
-**Validation**:
-```bash
-# Check syntax
-bash -n script_name.sh
-
-# Test with shellcheck (if available)
-shellcheck script_name.sh
 ```
 
 ## Target Environment

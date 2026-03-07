@@ -28,16 +28,19 @@ class Config:
         # Look for config files in order of preference
         possible_paths = [
             "config.local.yml",
-            "config.yml", 
+            "config.yml",
             "../../../config.local.yml",
             "../../../config.yml",
         ]
-        
-        for path in possible_paths:
-            config_file = Path(__file__).parent / path
-            if config_file.exists():
-                logger.info(f"Found config file: {config_file}")
-                return str(config_file.resolve())
+
+        # Search relative to package dir and cwd
+        search_roots = [Path(__file__).parent, Path.cwd()]
+        for root in search_roots:
+            for path in possible_paths:
+                config_file = root / path
+                if config_file.exists():
+                    logger.info(f"Found config file: {config_file}")
+                    return str(config_file.resolve())
         
         raise FileNotFoundError("No configuration file found. Expected config.yml or config.local.yml")
     
@@ -84,7 +87,14 @@ class Config:
     def get_data_root(self) -> str:
         """Get data root directory."""
         return self.get('infrastructure.storage.data_root', '/data')
-    
+
+    def get_consolidation_root(self) -> str:
+        """Get photo consolidation working directory."""
+        root = self.get('infrastructure.storage.consolidation_root')
+        if root:
+            return root
+        return self.get_data_root() + '/photo-consolidation'
+
     def get_supported_extensions(self) -> Dict[str, List[str]]:
         """Get supported file extensions for photos and videos."""
         extensions = self.get('photo_consolidation.extensions', {})
@@ -120,7 +130,21 @@ class Config:
     def should_preserve_structure(self) -> bool:
         """Check if original folder structure should be preserved."""
         return self.get('photo_consolidation.process.preserve_structure', True)
+
+    def should_add_date_suffix(self) -> bool:
+        """Check if YYYY-MM date suffix should be added to parent folders from EXIF."""
+        return self.get('photo_consolidation.process.add_date_suffix', True)
     
+    def get_run_id(self) -> Optional[str]:
+        """Get incremental run identifier (used for isolated report subdirectories)."""
+        value = self.get('photo_consolidation.incremental.run_id')
+        return value if value else None
+
+    def get_compare_final_dir(self) -> Optional[str]:
+        """Get path to existing final/ dir to check against during incremental run."""
+        value = self.get('photo_consolidation.incremental.compare_final')
+        return value if value else None
+
     def is_dry_run(self) -> bool:
         """Check if this is a dry run."""
         return self.get('photo_consolidation.process.dry_run', True)
@@ -144,7 +168,13 @@ class Config:
             errors.append("Data root directory not configured")
         elif not Path(data_root).exists():
             errors.append(f"Data root directory does not exist: {data_root}")
-        
+
+        consolidation_root = self.get_consolidation_root()
+        if not consolidation_root:
+            errors.append("Consolidation root directory not configured")
+        elif not Path(consolidation_root).parent.exists():
+            errors.append(f"Parent of consolidation root does not exist: {consolidation_root}")
+
         # Check source drives
         source_drives = self.get_source_drives()
         if not source_drives:
